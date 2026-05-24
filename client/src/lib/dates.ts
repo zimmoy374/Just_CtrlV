@@ -29,6 +29,17 @@ export function getWeekKey(weekStart: Date) {
   return `${year}-W${String(week).padStart(2, "0")}`
 }
 
+export function getWeekStartFromKey(weekKey: string) {
+  const match = /^(\d{4})-W(\d{2})$/.exec(weekKey)
+  if (!match) return getIsoWeekStart(new Date())
+  const year = Number(match[1])
+  const week = Number(match[2])
+  const firstIsoWeek = getIsoWeekStart(new Date(year, 0, 4))
+  const weekStart = new Date(firstIsoWeek)
+  weekStart.setDate(firstIsoWeek.getDate() + (week - 1) * 7)
+  return getIsoWeekStart(weekStart)
+}
+
 export function formatWeekRange(weekStart: Date) {
   const end = new Date(weekStart)
   end.setDate(end.getDate() + 6)

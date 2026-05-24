@@ -19,3 +19,32 @@ export type InspirationCard = {
   createdAt: string
   updatedAt: string
 }
+
+export type SearchResult = {
+  card: InspirationCard
+  weekKey: string
+  matchedKeywords: string[]
+  score: number
+}
+
+export type KnowledgeGraphNode = {
+  id: string
+  type: "keyword" | "card"
+  label: string
+  weekKey?: string | null
+  count: number
+  weeks: string[]
+  card?: InspirationCard | null
+}
+
+export type KnowledgeGraphEdge = {
+  id: string
+  source: string
+  target: string
+  keyword: string
+}
+
+export type KnowledgeGraphResponse = {
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+}

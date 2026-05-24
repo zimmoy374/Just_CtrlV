@@ -1,14 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react"
-import { CalendarDays, ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react"
+import { ChevronLeft, ChevronRight, Computer, Home, Network, Plus, Search, X } from "lucide-react"
 
-import { createImageCard, createTextCard, deleteCard, listCards, patchCard, retryAnalyze } from "./lib/api"
-import { addWeeks, formatWeekRange, getIsoWeekInfo, getIsoWeekStart, getWeekKey } from "./lib/dates"
-import type { InspirationCard } from "./types"
+import {
+  createImageCard,
+  createTextCard,
+  deleteCard,
+  getKnowledgeGraph,
+  listCards,
+  patchCard,
+  retryAnalyze,
+  searchCards,
+} from "./lib/api"
+import { addWeeks, formatWeekRange, getIsoWeekInfo, getIsoWeekStart, getWeekKey, getWeekStartFromKey } from "./lib/dates"
+import type { InspirationCard, KnowledgeGraphResponse, SearchResult } from "./types"
 import { BoardCard } from "./components/board-card"
 import { ImagePreviewOverlay, type ImagePreviewState } from "./components/image-preview-overlay"
+import { KnowledgeGraphView } from "./components/knowledge-graph-view"
+import { SearchResultsView } from "./components/search-results-view"
 import { Button } from "./components/ui/button"
 import { Textarea } from "./components/ui/textarea"
+import { WeekSummary } from "./components/week-summary"
 
 type Point = {
   x: number
@@ -27,10 +39,13 @@ type PanState = {
   originY: number
 }
 
+type AppView = "week" | "search" | "graph"
+
 const BOARD_INTERACTIVE_SELECTOR = ".inspiration-card,.inline-composer,button,textarea,input"
 const TEXT_ENTRY_SELECTOR = "textarea,input,[contenteditable='true']"
 
 function App() {
+  const [view, setView] = useState<AppView>("week")
   const [weekStart, setWeekStart] = useState(() => getIsoWeekStart(new Date()))
   const [cards, setCards] = useState<InspirationCard[]>([])
   const [textComposer, setTextComposer] = useState<TextComposer | null>(null)
@@ -40,6 +55,13 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null)
+  const [searchInput, setSearchInput] = useState("")
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [isSearchLoading, setIsSearchLoading] = useState(false)
+  const [graphData, setGraphData] = useState<KnowledgeGraphResponse | null>(null)
+  const [isGraphLoading, setIsGraphLoading] = useState(false)
+  const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const panRef = useRef<PanState | null>(null)
   const lastCanvasPointRef = useRef<Point | null>(null)
@@ -47,6 +69,7 @@ function App() {
   const weekKey = useMemo(() => getWeekKey(weekStart), [weekStart])
   const weekInfo = useMemo(() => getIsoWeekInfo(weekStart), [weekStart])
   const weekRange = useMemo(() => formatWeekRange(weekStart), [weekStart])
+  const weekTitle = `${weekInfo.year} 第 ${weekInfo.week} 周`
 
   const loadWeek = useCallback(async () => {
     try {
@@ -59,6 +82,40 @@ function App() {
       setIsLoading(false)
     }
   }, [weekKey])
+
+  const runSearch = useCallback(async (query: string) => {
+    const trimmed = query.trim()
+    if (!trimmed) {
+      setToast("先输入一个关键词")
+      return
+    }
+
+    setSearchInput(trimmed)
+    setSearchQuery(trimmed)
+    setView("search")
+    setIsSearchLoading(true)
+    try {
+      setSearchResults(await searchCards(trimmed))
+      setError(null)
+    } catch (searchError) {
+      setError(searchError instanceof Error ? searchError.message : "搜索失败")
+    } finally {
+      setIsSearchLoading(false)
+    }
+  }, [])
+
+  const openGraph = useCallback(async () => {
+    setView("graph")
+    setIsGraphLoading(true)
+    try {
+      setGraphData(await getKnowledgeGraph())
+      setError(null)
+    } catch (graphError) {
+      setError(graphError instanceof Error ? graphError.message : "图谱加载失败")
+    } finally {
+      setIsGraphLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -82,6 +139,23 @@ function App() {
     const timer = window.setTimeout(() => setToast(null), 1800)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  useEffect(() => {
+    if (!highlightedCardId) return
+    const timer = window.setTimeout(() => setHighlightedCardId(null), 2600)
+    return () => window.clearTimeout(timer)
+  }, [highlightedCardId])
+
+  useEffect(() => {
+    if (!highlightedCardId || view !== "week") return
+    const card = cards.find((item) => item.id === highlightedCardId)
+    const rect = viewportRef.current?.getBoundingClientRect()
+    if (!card || !rect) return
+    setPan({
+      x: Math.round(rect.width / 2 - card.x - card.width / 2),
+      y: Math.round(rect.height / 2 - card.y - 120),
+    })
+  }, [cards, highlightedCardId, view])
 
   const clientToCanvasPoint = useCallback(
     (clientX: number, clientY: number): Point => {
@@ -144,6 +218,7 @@ function App() {
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
+      if (view !== "week") return
       const target = event.target as HTMLElement | null
       const point = textComposer ? { x: textComposer.x, y: textComposer.y } : lastCanvasPointRef.current
 
@@ -167,7 +242,7 @@ function App() {
 
     window.addEventListener("paste", handlePaste)
     return () => window.removeEventListener("paste", handlePaste)
-  }, [handleCreateImage, handleCreateText, textComposer])
+  }, [handleCreateImage, handleCreateText, textComposer, view])
 
   const handleComposerSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -178,10 +253,12 @@ function App() {
   const handleMove = useCallback(
     (card: InspirationCard, x: number, y: number) => {
       setCards((current) => current.map((item) => (item.id === card.id ? { ...item, x, y } : item)))
-      patchCard(card.id, { x, y }).then(mergeCard).catch(() => {
-        setError("位置保存失败")
-        void loadWeek()
-      })
+      patchCard(card.id, { x, y })
+        .then(mergeCard)
+        .catch(() => {
+          setError("位置保存失败")
+          void loadWeek()
+        })
     },
     [loadWeek, mergeCard],
   )
@@ -231,6 +308,32 @@ function App() {
       setToast("复制失败")
     }
   }, [])
+
+  const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    void runSearch(searchInput)
+  }
+
+  const goToday = () => {
+    setWeekStart(getIsoWeekStart(new Date()))
+    setTextComposer(null)
+    setHighlightedCardId(null)
+    setView("week")
+  }
+
+  const openCardWeek = useCallback((card: InspirationCard) => {
+    setWeekStart(getWeekStartFromKey(card.weekKey))
+    setTextComposer(null)
+    setHighlightedCardId(card.id)
+    setView("week")
+  }, [])
+
+  const handleOpenSearchResult = useCallback(
+    (result: SearchResult) => {
+      openCardWeek(result.card)
+    },
+    [openCardWeek],
+  )
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -282,94 +385,129 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span>随心一记</span>
+          <Computer size={18} />
+          <span>随心一贴</span>
         </div>
 
-        <div className="week-controls" aria-label="周导航">
-          <Button type="button" variant="ghost" size="icon" title="上一周" onClick={() => setWeekStart(addWeeks(weekStart, -1))}>
-            <ChevronLeft size={18} />
-          </Button>
-          <div className="week-label">
-            <strong>
-              {weekInfo.year} 第 {weekInfo.week} 周
-            </strong>
-            <span>{weekRange}</span>
-          </div>
-          <Button type="button" variant="ghost" size="icon" title="下一周" onClick={() => setWeekStart(addWeeks(weekStart, 1))}>
-            <ChevronRight size={18} />
-          </Button>
-        </div>
+        <form className="search-form" role="search" onSubmit={handleSearchSubmit}>
+          <Search size={17} />
+          <input
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            placeholder="搜索关键词"
+            aria-label="搜索关键词"
+          />
+          <button type="submit">搜索</button>
+        </form>
 
-        <div className="topbar-actions">
-          <Button type="button" variant="secondary" size="sm" onClick={() => setWeekStart(getIsoWeekStart(new Date()))}>
-            <CalendarDays size={16} />
-            今天
-          </Button>
-          <Button type="button" variant="secondary" size="sm" onClick={() => void loadWeek()}>
-            <RefreshCw size={16} className={isLoading ? "spin" : undefined} />
-            刷新
-          </Button>
+        <div className="topbar-status">
+          {view === "week" ? (
+            <div className="week-controls" aria-label="周导航">
+              <Button type="button" variant="ghost" size="icon" title="上一周" onClick={() => setWeekStart(addWeeks(weekStart, -1))}>
+                <ChevronLeft size={18} />
+              </Button>
+              <div className="week-label">
+                <strong>{weekTitle}</strong>
+                <span>{weekRange}</span>
+              </div>
+              <Button type="button" variant="ghost" size="icon" title="下一周" onClick={() => setWeekStart(addWeeks(weekStart, 1))}>
+                <ChevronRight size={18} />
+              </Button>
+            </div>
+          ) : (
+            <div className="view-chip">{view === "search" ? `搜索：${searchQuery}` : "知识图谱"}</div>
+          )}
         </div>
       </header>
 
-      <main className="board-wrap">
-        {cards.length === 0 && !isLoading ? <div className="empty-week">本周还空着</div> : null}
-
-        <div
-          ref={viewportRef}
-          className={`canvas-viewport${isPanning ? " is-panning" : ""}`}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          onDoubleClick={handleDoubleClick}
-        >
-          <div className="canvas-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}>
-            {textComposer ? (
-              <form
-                className="inline-composer"
-                onSubmit={handleComposerSubmit}
-                style={{ transform: `translate(${textComposer.x}px, ${textComposer.y}px)` }}
-              >
-                <Textarea
-                  autoFocus
-                  value={textComposer.text}
-                  onChange={(event) => setTextComposer((current) => (current ? { ...current, text: event.target.value } : current))}
-                  placeholder="写下灵感、片段或网址"
-                  aria-label="文本灵感"
-                />
-                <div className="inline-composer-actions">
-                  <Button type="button" variant="ghost" size="icon" title="关闭" onClick={() => setTextComposer(null)}>
-                    <X size={15} />
-                  </Button>
-                  <Button type="submit" variant="primary" size="sm" disabled={!textComposer.text.trim()}>
-                    <Plus size={15} />
-                    添加
-                  </Button>
-                </div>
-              </form>
-            ) : null}
-            {cards.map((card) => (
-              <BoardCard
-                key={card.id}
-                card={card}
-                onMove={handleMove}
-                onDelete={handleDelete}
-                onRetry={handleRetry}
-                onCopyKeyword={handleCopyKeyword}
-                onDeleteKeyword={handleDeleteKeyword}
-                onOpenImage={openImagePreview}
-              />
-            ))}
-          </div>
+      <main className={`board-wrap view-${view}`}>
+        <div className="canvas-tools" aria-label="画布工具">
+          <button
+            type="button"
+            className={`canvas-tool${view === "graph" ? " is-active" : ""}`}
+            title="知识图谱"
+            onClick={() => void openGraph()}
+          >
+            <Network size={18} />
+          </button>
+          <button type="button" className="canvas-tool" title="回到本周" onClick={goToday}>
+            <Home size={18} />
+          </button>
+          {view === "week" ? <WeekSummary cards={cards} weekTitle={weekTitle} onSearchKeyword={(keyword) => void runSearch(keyword)} /> : null}
         </div>
 
-        {imagePreview ? (
-          <ImagePreviewOverlay
-            preview={imagePreview}
-            onChange={setImagePreview}
-            onClose={() => setImagePreview(null)}
+        {view === "week" ? (
+          <>
+            {cards.length === 0 && !isLoading ? <div className="empty-week">本周还空着</div> : null}
+
+            <div
+              ref={viewportRef}
+              className={`canvas-viewport${isPanning ? " is-panning" : ""}`}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}
+              onDoubleClick={handleDoubleClick}
+            >
+              <div className="canvas-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}>
+                {textComposer ? (
+                  <form
+                    className="inline-composer"
+                    onSubmit={handleComposerSubmit}
+                    style={{ transform: `translate(${textComposer.x}px, ${textComposer.y}px)` }}
+                  >
+                    <Textarea
+                      autoFocus
+                      value={textComposer.text}
+                      onChange={(event) => setTextComposer((current) => (current ? { ...current, text: event.target.value } : current))}
+                      placeholder="写下灵感、片段或网址"
+                      aria-label="文本灵感"
+                    />
+                    <div className="inline-composer-actions">
+                      <Button type="button" variant="ghost" size="icon" title="关闭" onClick={() => setTextComposer(null)}>
+                        <X size={15} />
+                      </Button>
+                      <Button type="submit" variant="primary" size="sm" disabled={!textComposer.text.trim()}>
+                        <Plus size={15} />
+                        添加
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+                {cards.map((card) => (
+                  <BoardCard
+                    key={card.id}
+                    card={card}
+                    isHighlighted={card.id === highlightedCardId}
+                    onMove={handleMove}
+                    onDelete={handleDelete}
+                    onRetry={handleRetry}
+                    onCopyKeyword={handleCopyKeyword}
+                    onDeleteKeyword={handleDeleteKeyword}
+                    onOpenImage={openImagePreview}
+                  />
+                ))}
+              </div>
+            </div>
+
+          </>
+        ) : null}
+
+        {view === "search" ? (
+          <SearchResultsView query={searchQuery} results={searchResults} isLoading={isSearchLoading} onOpenCard={handleOpenSearchResult} />
+        ) : null}
+
+        {view === "graph" ? (
+          <KnowledgeGraphView
+            graph={graphData}
+            isLoading={isGraphLoading}
+            onOpenCard={openCardWeek}
+            onSearchKeyword={(keyword) => void runSearch(keyword)}
           />
+        ) : null}
+
+        {imagePreview ? (
+          <ImagePreviewOverlay preview={imagePreview} onChange={setImagePreview} onClose={() => setImagePreview(null)} />
         ) : null}
         {error ? <div className="error-banner">{error}</div> : null}
         {toast ? <div className="toast">{toast}</div> : null}

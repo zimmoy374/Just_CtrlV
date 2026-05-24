@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
+from copy import deepcopy
 from base64 import b64encode
+from json import JSONDecodeError
 from pathlib import Path
 
 import httpx
@@ -17,14 +19,14 @@ from .settings import settings
 
 TEXT_PROMPT = """
 你是一个灵感剪切板助手。请根据用户粘贴的文本，提炼一句不超过 40 字的中文总结，
-并给出 5 到 10 个短关键词。关键词要像灵感标签，清晰、可复用、不要太正式。
+并给出 5 到 7 个短关键词。关键词要像要点标签，清晰、可复用。
 只返回 JSON，格式为 {"summary":"...","keywords":["..."]}。
 """
 
 IMAGE_PROMPT = """
-你是一个视觉灵感剪切板助手。请观察图片里的画面、文字、布局、色彩和设计风格，
+你是一个视觉灵感剪切板助手。请观察图片里的内容信息，
 提炼一句不超过 40 字的中文总结，并给出 5 到 10 个短关键词。
-关键词要像灵感标签，清晰、可复用、不要太正式。
+关键词要像灵感标签，清晰、可复用。
 只返回 JSON，格式为 {"summary":"...","keywords":["..."]}。
 """
 
@@ -39,7 +41,25 @@ def _clean_json(text: str) -> dict:
     end = stripped.rfind("}")
     if start != -1 and end != -1:
         stripped = stripped[start : end + 1]
-    return json.loads(stripped)
+    if not stripped:
+        raise ValueError("AI 返回为空，无法解析 JSON")
+    try:
+        return json.loads(stripped)
+    except JSONDecodeError as exc:
+        preview = stripped[:120].replace("\n", " ")
+        raise ValueError(f"AI 未返回有效 JSON：{preview}") from exc
+
+
+def _friendly_ai_error(exc: Exception) -> str:
+    message = str(exc)
+    lowered = message.lower()
+    if "not been recharged" in lowered or "free resources" in lowered:
+        return "AI 服务商返回免费额度限制：当前账号试用次数已用完或需要充值。请更换可用模型/账号，或给中转账号充值后重试。"
+    if "insufficient" in lowered and ("quota" in lowered or "balance" in lowered or "credit" in lowered):
+        return "AI 服务商返回额度不足：请检查账号余额、套餐额度或更换模型后重试。"
+    if "rate limit" in lowered or "too many requests" in lowered:
+        return "AI 服务商请求过快：稍后重试，或换一个限流更宽的模型。"
+    return message[:240]
 
 
 def _normalize_result(payload: dict) -> tuple[str, list[str]]:
@@ -116,14 +136,26 @@ def _analyze_with_openai_compatible(card: Card) -> dict:
 
     with httpx.Client(timeout=60) as client:
         response = client.post(url, headers=headers, json=payload)
-        if response.status_code == 400 and "response_format" in response.text:
+        should_retry_without_format = response.status_code == 400 and "response_format" in response.text
+        if should_retry_without_format:
             payload.pop("response_format", None)
             response = client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
 
-    content = data["choices"][0]["message"].get("content") or "{}"
-    return _clean_json(content)
+        content = data["choices"][0]["message"].get("content") or ""
+        try:
+            return _clean_json(content)
+        except ValueError:
+            if "response_format" not in payload:
+                raise
+            retry_payload = deepcopy(payload)
+            retry_payload.pop("response_format", None)
+            retry_response = client.post(url, headers=headers, json=retry_payload)
+            retry_response.raise_for_status()
+            retry_data = retry_response.json()
+            retry_content = retry_data["choices"][0]["message"].get("content") or ""
+            return _clean_json(retry_content)
 
 
 def _analyze_with_provider(card: Card) -> dict:
@@ -176,7 +208,7 @@ def analyze_card(card_id: str) -> None:
             if not card:
                 return
             card.ai_status = "failed"
-            card.ai_error = str(exc)[:240]
+            card.ai_error = _friendly_ai_error(exc)
             card.updated_at = utc_now()
             session.add(card)
             session.commit()

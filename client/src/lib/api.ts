@@ -1,4 +1,4 @@
-import type { InspirationCard } from "../types"
+import type { InspirationCard, KnowledgeGraphResponse, SearchResult } from "../types"
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
 
@@ -27,6 +27,15 @@ export function resolveAssetUrl(path?: string | null) {
 
 export async function listCards(weekKey: string) {
   return parseResponse<InspirationCard[]>(await fetch(`${API_BASE}/api/weeks/${weekKey}/cards`))
+}
+
+export async function searchCards(query: string) {
+  const params = new URLSearchParams({ q: query })
+  return parseResponse<SearchResult[]>(await fetch(`${API_BASE}/api/search?${params.toString()}`))
+}
+
+export async function getKnowledgeGraph() {
+  return parseResponse<KnowledgeGraphResponse>(await fetch(`${API_BASE}/api/graph`))
 }
 
 export async function createTextCard(input: { weekKey: string; textContent: string; x: number; y: number }) {

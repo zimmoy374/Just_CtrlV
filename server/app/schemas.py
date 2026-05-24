@@ -49,3 +49,36 @@ class CardResponse(BaseModel):
     updated_at: datetime = Field(alias="updatedAt")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class SearchResult(BaseModel):
+    card: CardResponse
+    week_key: str = Field(alias="weekKey")
+    matched_keywords: list[str] = Field(alias="matchedKeywords")
+    score: float
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class KnowledgeGraphNode(BaseModel):
+    id: str
+    type: str
+    label: str
+    week_key: Optional[str] = Field(default=None, alias="weekKey")
+    count: int = 0
+    weeks: list[str] = Field(default_factory=list)
+    card: Optional[CardResponse] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class KnowledgeGraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    keyword: str
+
+
+class KnowledgeGraphResponse(BaseModel):
+    nodes: list[KnowledgeGraphNode]
+    edges: list[KnowledgeGraphEdge]

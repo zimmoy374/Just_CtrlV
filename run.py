@@ -79,9 +79,9 @@ def main() -> None:
         cwd=ROOT,
     )
 
-    print("正在启动随心一记...")
+    print("正在启动随心一贴...")
     if wait_for_port(5173) and wait_for_port(8000):
-        print(f"随心一记：{URL}")
+        print(f"随心一贴：{URL}")
         webbrowser.open(URL)
     else:
         print("启动超时。请检查上方终端日志。")

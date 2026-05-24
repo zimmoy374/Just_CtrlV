@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import mimetypes
 import random
+import unicodedata
+from collections import defaultdict
 from contextlib import asynccontextmanager
+from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,7 +17,7 @@ from sqlmodel import Session, select
 from .ai import analyze_card
 from .database import get_session, init_db
 from .models import Card, utc_now
-from .schemas import CardPatch, CardResponse, TextCardCreate
+from .schemas import CardPatch, CardResponse, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgeGraphResponse, SearchResult, TextCardCreate
 from .settings import settings
 
 
@@ -75,6 +78,26 @@ def new_card_base(week_key: str, card_type: str, x: float, y: float) -> Card:
     )
 
 
+def normalize_keyword(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(char for char in normalized if char.isalnum())
+
+
+def keyword_match_score(query: str, keyword: str) -> float:
+    if not query or not keyword:
+        return 0
+    if query == keyword:
+        return 100
+    if keyword.startswith(query):
+        return 90
+    if query in keyword:
+        return 75
+    if keyword in query:
+        return 70
+    ratio = SequenceMatcher(None, query, keyword).ratio()
+    return round(ratio * 68, 2) if ratio >= 0.58 else 0
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"ok": "true"}
@@ -85,6 +108,100 @@ def list_cards(week_key: str, session: Session = Depends(get_session)) -> list[C
     statement = select(Card).where(Card.week_key == week_key).order_by(Card.created_at)
     cards = session.exec(statement).all()
     return [card_to_response(card) for card in cards]
+
+
+@app.get("/api/search", response_model=list[SearchResult])
+def search_cards(q: str = "", session: Session = Depends(get_session)) -> list[SearchResult]:
+    normalized_query = normalize_keyword(q)
+    if not normalized_query:
+        return []
+
+    cards = session.exec(select(Card)).all()
+    results: list[SearchResult] = []
+    for card in cards:
+        matched_keywords = []
+        best_score = 0.0
+        for keyword in card.keywords or []:
+            score = keyword_match_score(normalized_query, normalize_keyword(keyword))
+            if score <= 0:
+                continue
+            matched_keywords.append(keyword)
+            best_score = max(best_score, score)
+
+        if matched_keywords:
+            results.append(
+                SearchResult(
+                    card=card_to_response(card),
+                    weekKey=card.week_key,
+                    matchedKeywords=matched_keywords,
+                    score=best_score,
+                ),
+            )
+
+    return sorted(results, key=lambda item: (-item.score, item.week_key, item.card.created_at))[:80]
+
+
+@app.get("/api/graph", response_model=KnowledgeGraphResponse)
+def get_knowledge_graph(session: Session = Depends(get_session)) -> KnowledgeGraphResponse:
+    cards = session.exec(select(Card).order_by(Card.created_at)).all()
+    keyword_groups: dict[str, dict] = defaultdict(lambda: {"label": "", "cards": {}, "weeks": set()})
+
+    for card in cards:
+        for keyword in card.keywords or []:
+            normalized = normalize_keyword(keyword)
+            if not normalized:
+                continue
+            group = keyword_groups[normalized]
+            group["label"] = group["label"] or keyword
+            group["cards"][card.id] = card
+            group["weeks"].add(card.week_key)
+
+    connected_groups = {
+        key: group
+        for key, group in keyword_groups.items()
+        if len(group["cards"]) >= 2 or len(group["weeks"]) >= 2
+    }
+
+    nodes: list[KnowledgeGraphNode] = []
+    edges: list[KnowledgeGraphEdge] = []
+    added_cards: set[str] = set()
+
+    for key, group in sorted(connected_groups.items(), key=lambda item: (-len(item[1]["cards"]), item[1]["label"])):
+        keyword_node_id = f"keyword:{key}"
+        cards_for_keyword = sorted(group["cards"].values(), key=lambda card: (card.week_key, card.created_at))
+        nodes.append(
+            KnowledgeGraphNode(
+                id=keyword_node_id,
+                type="keyword",
+                label=group["label"],
+                count=len(cards_for_keyword),
+                weeks=sorted(group["weeks"]),
+            ),
+        )
+
+        for card in cards_for_keyword:
+            card_node_id = f"card:{card.id}"
+            if card.id not in added_cards:
+                nodes.append(
+                    KnowledgeGraphNode(
+                        id=card_node_id,
+                        type="card",
+                        label=card.summary or card.text_content or "灵感卡片",
+                        weekKey=card.week_key,
+                        card=card_to_response(card),
+                    ),
+                )
+                added_cards.add(card.id)
+            edges.append(
+                KnowledgeGraphEdge(
+                    id=f"{keyword_node_id}->{card_node_id}",
+                    source=keyword_node_id,
+                    target=card_node_id,
+                    keyword=group["label"],
+                ),
+            )
+
+    return KnowledgeGraphResponse(nodes=nodes, edges=edges)
 
 
 @app.post("/api/cards/text", response_model=CardResponse)

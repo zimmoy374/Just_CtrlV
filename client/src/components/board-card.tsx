@@ -15,6 +15,7 @@ const STATUS_LABEL: Record<AiStatus, string> = {
 
 type BoardCardProps = {
   card: InspirationCard
+  isHighlighted?: boolean
   onMove: (card: InspirationCard, x: number, y: number) => void
   onDelete: (card: InspirationCard) => void
   onRetry: (card: InspirationCard) => void
@@ -25,6 +26,7 @@ type BoardCardProps = {
 
 export function BoardCard({
   card,
+  isHighlighted = false,
   onMove,
   onDelete,
   onRetry,
@@ -33,9 +35,10 @@ export function BoardCard({
   onOpenImage,
 }: BoardCardProps) {
   const seed = hashSeed(card.styleSeed)
-  const palette = seed % 4
-  const decoration = seed % 4
-  const className = card.type === "text" ? `inspiration-card text-card palette-${palette}` : "inspiration-card image-card"
+  const palette = seed % 8
+  const decoration = seed % 8
+  const baseClass = card.type === "text" ? `inspiration-card text-card palette-${palette}` : "inspiration-card image-card"
+  const className = `${baseClass}${isHighlighted ? " is-highlighted" : ""}`
 
   const handleDragEnd = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
     onMove(card, Math.round(card.x + info.offset.x), Math.round(card.y + info.offset.y))
@@ -103,11 +106,12 @@ function KeywordArea({
   if (card.keywords.length === 0) {
     return (
       <div className="keyword-area">
-        <span className={`status-pill ${card.aiStatus}`}>
+        <span className={`status-pill ${card.aiStatus}`} title={card.aiError || STATUS_LABEL[card.aiStatus]}>
           {card.aiStatus === "pending" || card.aiStatus === "generating" ? <LoaderCircle size={13} className="spin" /> : null}
           {card.aiStatus === "failed" ? <Clipboard size={13} /> : null}
           {STATUS_LABEL[card.aiStatus]}
         </span>
+        {card.aiStatus === "failed" && card.aiError ? <p className="ai-error-text">{card.aiError}</p> : null}
       </div>
     )
   }
