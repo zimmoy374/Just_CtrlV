@@ -1,11 +1,11 @@
 import { useRef } from "react"
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react"
 
-import { resolveAssetUrl } from "../lib/api"
-import type { InspirationCard } from "../types"
+import { resolveAssetUrl } from "../lib/api/client"
+import type { CaptureCard } from "../types/cards"
 
 export type ImagePreviewState = {
-  card: InspirationCard
+  card: CaptureCard
   scale: number
   x: number
   y: number
@@ -63,7 +63,7 @@ export function ImagePreviewOverlay({ preview, onChange, onClose }: ImagePreview
       >
         <img
           src={resolveAssetUrl(preview.card.imageUrl)}
-          alt={preview.card.summary || "放大的灵感截图"}
+          alt={preview.card.summary || "放大的知识截图"}
           draggable={false}
           style={{
             transform: `translate(${preview.x}px, ${preview.y}px) scale(${preview.scale})`,
@@ -73,3 +73,5 @@ export function ImagePreviewOverlay({ preview, onChange, onClose }: ImagePreview
     </div>
   )
 }
+
+

@@ -1,138 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react"
-import { ChevronLeft, ChevronRight, Computer, Home, Network, Plus, Search, X } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { ChevronLeft, ChevronRight, Home, Network, Search, Sparkles } from "lucide-react"
 
-import {
-  createImageCard,
-  createTextCard,
-  deleteCard,
-  getKnowledgeGraph,
-  listCards,
-  patchCard,
-  retryAnalyze,
-  searchCards,
-} from "./lib/api"
-import { addWeeks, formatWeekRange, getIsoWeekInfo, getIsoWeekStart, getWeekKey, getWeekStartFromKey } from "./lib/dates"
-import type { InspirationCard, KnowledgeGraphResponse, SearchResult } from "./types"
-import { BoardCard } from "./components/board-card"
-import { ImagePreviewOverlay, type ImagePreviewState } from "./components/image-preview-overlay"
-import { KnowledgeGraphView } from "./components/knowledge-graph-view"
-import { SearchResultsView } from "./components/search-results-view"
+import { ImagePreviewOverlay } from "./components/image-preview-overlay"
+import { SuggestionsPanel } from "./components/suggestions-panel"
 import { Button } from "./components/ui/button"
-import { Textarea } from "./components/ui/textarea"
 import { WeekSummary } from "./components/week-summary"
-
-type Point = {
-  x: number
-  y: number
-}
-
-type TextComposer = Point & {
-  text: string
-}
-
-type PanState = {
-  pointerId: number
-  startX: number
-  startY: number
-  originX: number
-  originY: number
-}
-
-type AppView = "week" | "search" | "graph"
-
-const BOARD_INTERACTIVE_SELECTOR = ".inspiration-card,.inline-composer,button,textarea,input"
-const TEXT_ENTRY_SELECTOR = "textarea,input,[contenteditable='true']"
+import { useBoardController } from "./hooks/useBoardController"
+import { useKnowledgeWorkspace } from "./hooks/useKnowledgeWorkspace"
+import { BoardPage } from "./pages/BoardPage"
+import { KnowledgeMapPage } from "./pages/KnowledgeMapPage"
+import { SearchPage } from "./pages/SearchPage"
+import type { KnowledgeSearchResult } from "./types/retrieval"
 
 function App() {
-  const [view, setView] = useState<AppView>("week")
-  const [weekStart, setWeekStart] = useState(() => getIsoWeekStart(new Date()))
-  const [cards, setCards] = useState<InspirationCard[]>([])
-  const [textComposer, setTextComposer] = useState<TextComposer | null>(null)
-  const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
-  const [isPanning, setIsPanning] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null)
-  const [searchInput, setSearchInput] = useState("")
-  const [searchQuery, setSearchQuery] = useState("")
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [isSearchLoading, setIsSearchLoading] = useState(false)
-  const [graphData, setGraphData] = useState<KnowledgeGraphResponse | null>(null)
-  const [isGraphLoading, setIsGraphLoading] = useState(false)
-  const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null)
-  const viewportRef = useRef<HTMLDivElement | null>(null)
-  const panRef = useRef<PanState | null>(null)
-  const lastCanvasPointRef = useRef<Point | null>(null)
 
-  const weekKey = useMemo(() => getWeekKey(weekStart), [weekStart])
-  const weekInfo = useMemo(() => getIsoWeekInfo(weekStart), [weekStart])
-  const weekRange = useMemo(() => formatWeekRange(weekStart), [weekStart])
-  const weekTitle = `${weekInfo.year} 第 ${weekInfo.week} 周`
-
-  const loadWeek = useCallback(async () => {
-    try {
-      setIsLoading(true)
-      setCards(await listCards(weekKey))
-      setError(null)
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载失败")
-    } finally {
-      setIsLoading(false)
-    }
-  }, [weekKey])
-
-  const runSearch = useCallback(async (query: string) => {
-    const trimmed = query.trim()
-    if (!trimmed) {
-      setToast("先输入一个关键词")
-      return
-    }
-
-    setSearchInput(trimmed)
-    setSearchQuery(trimmed)
-    setView("search")
-    setIsSearchLoading(true)
-    try {
-      setSearchResults(await searchCards(trimmed))
-      setError(null)
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "搜索失败")
-    } finally {
-      setIsSearchLoading(false)
-    }
-  }, [])
-
-  const openGraph = useCallback(async () => {
-    setView("graph")
-    setIsGraphLoading(true)
-    try {
-      setGraphData(await getKnowledgeGraph())
-      setError(null)
-    } catch (graphError) {
-      setError(graphError instanceof Error ? graphError.message : "图谱加载失败")
-    } finally {
-      setIsGraphLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadWeek()
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [loadWeek])
-
-  useEffect(() => {
-    if (!cards.some((card) => card.aiStatus === "pending" || card.aiStatus === "generating")) {
-      return
-    }
-    const timer = window.setInterval(() => {
-      void loadWeek()
-    }, 2200)
-    return () => window.clearInterval(timer)
-  }, [cards, loadWeek])
+  const knowledge = useKnowledgeWorkspace({ setError, setToast })
+  const board = useBoardController({
+    view: knowledge.view,
+    setView: knowledge.setView,
+    setError,
+    setToast,
+    refreshReflections: knowledge.refreshReflections,
+  })
 
   useEffect(() => {
     if (!toast) return
@@ -140,375 +31,133 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  useEffect(() => {
-    if (!highlightedCardId) return
-    const timer = window.setTimeout(() => setHighlightedCardId(null), 2600)
-    return () => window.clearTimeout(timer)
-  }, [highlightedCardId])
-
-  useEffect(() => {
-    if (!highlightedCardId || view !== "week") return
-    const card = cards.find((item) => item.id === highlightedCardId)
-    const rect = viewportRef.current?.getBoundingClientRect()
-    if (!card || !rect) return
-    setPan({
-      x: Math.round(rect.width / 2 - card.x - card.width / 2),
-      y: Math.round(rect.height / 2 - card.y - 120),
-    })
-  }, [cards, highlightedCardId, view])
-
-  const clientToCanvasPoint = useCallback(
-    (clientX: number, clientY: number): Point => {
-      const rect = viewportRef.current?.getBoundingClientRect()
-      return {
-        x: Math.max(24, clientX - (rect?.left ?? 0) - pan.x),
-        y: Math.max(24, clientY - (rect?.top ?? 0) - pan.y),
-      }
-    },
-    [pan.x, pan.y],
-  )
-
-  const getDropPoint = useCallback(
-    (preferred?: Point | null): Point => {
-      if (preferred) return preferred
-      const rect = viewportRef.current?.getBoundingClientRect()
-      const offset = (cards.length % 8) * 26
-      return {
-        x: Math.max(48, (rect?.width ?? 1200) / 2 - pan.x - 160 + offset),
-        y: Math.max(84, (rect?.height ?? 720) / 2 - pan.y - 130 + offset / 2),
-      }
-    },
-    [cards.length, pan.x, pan.y],
-  )
-
-  const mergeCard = useCallback((updated: InspirationCard) => {
-    setCards((current) => current.map((card) => (card.id === updated.id ? updated : card)))
-  }, [])
-
-  const handleCreateText = useCallback(
-    async (text: string, point?: Point | null) => {
-      const trimmed = text.trim()
-      if (!trimmed) return
-      const dropPoint = getDropPoint(point)
-      try {
-        const created = await createTextCard({ weekKey, textContent: trimmed, ...dropPoint })
-        setCards((current) => [...current, created])
-        setTextComposer(null)
-        setError(null)
-      } catch (createError) {
-        setError(createError instanceof Error ? createError.message : "新增文本失败")
-      }
-    },
-    [getDropPoint, weekKey],
-  )
-
-  const handleCreateImage = useCallback(
-    async (file: File, point?: Point | null) => {
-      const dropPoint = getDropPoint(point)
-      try {
-        const created = await createImageCard({ weekKey, file, ...dropPoint })
-        setCards((current) => [...current, created])
-        setError(null)
-      } catch (createError) {
-        setError(createError instanceof Error ? createError.message : "新增图片失败")
-      }
-    },
-    [getDropPoint, weekKey],
-  )
-
-  useEffect(() => {
-    const handlePaste = (event: ClipboardEvent) => {
-      if (view !== "week") return
-      const target = event.target as HTMLElement | null
-      const point = textComposer ? { x: textComposer.x, y: textComposer.y } : lastCanvasPointRef.current
-
-      const items = Array.from(event.clipboardData?.items ?? [])
-      const imageItem = items.find((item) => item.kind === "file" && item.type.startsWith("image/"))
-      const imageFile = imageItem?.getAsFile()
-      if (imageFile) {
-        event.preventDefault()
-        void handleCreateImage(imageFile, point)
-        return
-      }
-
-      if (target?.closest(TEXT_ENTRY_SELECTOR)) return
-
-      const text = event.clipboardData?.getData("text/plain")
-      if (text?.trim()) {
-        event.preventDefault()
-        void handleCreateText(text, point)
-      }
-    }
-
-    window.addEventListener("paste", handlePaste)
-    return () => window.removeEventListener("paste", handlePaste)
-  }, [handleCreateImage, handleCreateText, textComposer, view])
-
-  const handleComposerSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!textComposer) return
-    void handleCreateText(textComposer.text, { x: textComposer.x, y: textComposer.y })
-  }
-
-  const handleMove = useCallback(
-    (card: InspirationCard, x: number, y: number) => {
-      setCards((current) => current.map((item) => (item.id === card.id ? { ...item, x, y } : item)))
-      patchCard(card.id, { x, y })
-        .then(mergeCard)
-        .catch(() => {
-          setError("位置保存失败")
-          void loadWeek()
-        })
-    },
-    [loadWeek, mergeCard],
-  )
-
-  const handleDelete = useCallback(async (card: InspirationCard) => {
-    try {
-      await deleteCard(card.id)
-      setCards((current) => current.filter((item) => item.id !== card.id))
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "删除失败")
-    }
-  }, [])
-
-  const handleRetry = useCallback(
-    async (card: InspirationCard) => {
-      setCards((current) =>
-        current.map((item) => (item.id === card.id ? { ...item, aiStatus: "pending", aiError: null } : item)),
-      )
-      try {
-        mergeCard(await retryAnalyze(card.id))
-      } catch (retryError) {
-        setError(retryError instanceof Error ? retryError.message : "重试失败")
-      }
-    },
-    [mergeCard],
-  )
-
-  const handleDeleteKeyword = useCallback(
-    async (card: InspirationCard, keyword: string) => {
-      const keywords = card.keywords.filter((item) => item !== keyword)
-      setCards((current) => current.map((item) => (item.id === card.id ? { ...item, keywords } : item)))
-      try {
-        mergeCard(await patchCard(card.id, { keywords }))
-      } catch (keywordError) {
-        setError(keywordError instanceof Error ? keywordError.message : "关键词保存失败")
-        void loadWeek()
-      }
-    },
-    [loadWeek, mergeCard],
-  )
-
-  const handleCopyKeyword = useCallback(async (keyword: string) => {
-    try {
-      await navigator.clipboard.writeText(keyword)
-      setToast(`已复制：${keyword}`)
-    } catch {
-      setToast("复制失败")
-    }
-  }, [])
-
-  const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    void runSearch(searchInput)
-  }
-
-  const goToday = () => {
-    setWeekStart(getIsoWeekStart(new Date()))
-    setTextComposer(null)
-    setHighlightedCardId(null)
-    setView("week")
-  }
-
-  const openCardWeek = useCallback((card: InspirationCard) => {
-    setWeekStart(getWeekStartFromKey(card.weekKey))
-    setTextComposer(null)
-    setHighlightedCardId(card.id)
-    setView("week")
-  }, [])
-
   const handleOpenSearchResult = useCallback(
-    (result: SearchResult) => {
-      openCardWeek(result.card)
+    (result: KnowledgeSearchResult) => {
+      if (result.card) {
+        board.openCardWeek(result.card)
+      } else {
+        setToast(`来源：${result.knowledgeItem.source}`)
+      }
     },
-    [openCardWeek],
+    [board],
   )
-
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return
-    const target = event.target as HTMLElement
-    lastCanvasPointRef.current = clientToCanvasPoint(event.clientX, event.clientY)
-    if (target.closest(BOARD_INTERACTIVE_SELECTOR)) return
-    panRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: pan.x,
-      originY: pan.y,
-    }
-    event.currentTarget.setPointerCapture(event.pointerId)
-    setIsPanning(true)
-  }
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const state = panRef.current
-    if (!state || state.pointerId !== event.pointerId) return
-    setPan({
-      x: state.originX + event.clientX - state.startX,
-      y: state.originY + event.clientY - state.startY,
-    })
-  }
-
-  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (panRef.current?.pointerId !== event.pointerId) return
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    panRef.current = null
-    setIsPanning(false)
-  }
-
-  const handleDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement
-    if (target.closest(BOARD_INTERACTIVE_SELECTOR)) return
-    const point = clientToCanvasPoint(event.clientX, event.clientY)
-    lastCanvasPointRef.current = point
-    setTextComposer({ ...point, text: "" })
-  }
-
-  const openImagePreview = useCallback((card: InspirationCard) => {
-    setImagePreview({ card, scale: 1, x: 0, y: 0 })
-  }, [])
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <Computer size={18} />
-          <span>随心一贴</span>
+        <div className="week-controls" aria-label="周导航">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            title="上一周"
+            onClick={() => board.setWeekStart(board.addWeeks(board.weekStart, -1))}
+          >
+            <ChevronLeft size={18} />
+          </Button>
+          <div className="week-label">
+            <strong>{board.weekTitle}</strong>
+            <span>{board.weekRange}</span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            title="下一周"
+            onClick={() => board.setWeekStart(board.addWeeks(board.weekStart, 1))}
+          >
+            <ChevronRight size={18} />
+          </Button>
         </div>
 
-        <form className="search-form" role="search" onSubmit={handleSearchSubmit}>
+        <form className="search-form" role="search" onSubmit={knowledge.handleSearchSubmit}>
           <Search size={17} />
           <input
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="搜索关键词"
-            aria-label="搜索关键词"
+            value={knowledge.searchInput}
+            onChange={(event) => knowledge.setSearchInput(event.target.value)}
+            placeholder="搜索知识"
+            aria-label="搜索知识"
           />
           <button type="submit">搜索</button>
         </form>
 
-        <div className="topbar-status">
-          {view === "week" ? (
-            <div className="week-controls" aria-label="周导航">
-              <Button type="button" variant="ghost" size="icon" title="上一周" onClick={() => setWeekStart(addWeeks(weekStart, -1))}>
-                <ChevronLeft size={18} />
-              </Button>
-              <div className="week-label">
-                <strong>{weekTitle}</strong>
-                <span>{weekRange}</span>
-              </div>
-              <Button type="button" variant="ghost" size="icon" title="下一周" onClick={() => setWeekStart(addWeeks(weekStart, 1))}>
-                <ChevronRight size={18} />
-              </Button>
-            </div>
-          ) : (
-            <div className="view-chip">{view === "search" ? `搜索：${searchQuery}` : "知识图谱"}</div>
-          )}
-        </div>
-      </header>
-
-      <main className={`board-wrap view-${view}`}>
-        <div className="canvas-tools" aria-label="画布工具">
+        <div className="topbar-tools" aria-label="页面工具">
+          <WeekSummary cards={board.cards} weekTitle={board.weekTitle} onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)} />
+          <button type="button" className="topbar-tool" title="待整理建议" onClick={() => void knowledge.refreshReflections()}>
+            <Sparkles size={18} />
+            {knowledge.reflections.length > 0 ? <span className="tool-count">{knowledge.reflections.length}</span> : null}
+          </button>
           <button
             type="button"
-            className={`canvas-tool${view === "graph" ? " is-active" : ""}`}
-            title="知识图谱"
-            onClick={() => void openGraph()}
+            className={`topbar-tool${knowledge.view === "knowledge" ? " is-active" : ""}`}
+            title="知识地图"
+            onClick={() => void knowledge.openGraph()}
           >
             <Network size={18} />
           </button>
-          <button type="button" className="canvas-tool" title="回到本周" onClick={goToday}>
+          <button type="button" className="topbar-tool" title="回到本周" onClick={board.goToday}>
             <Home size={18} />
           </button>
-          {view === "week" ? <WeekSummary cards={cards} weekTitle={weekTitle} onSearchKeyword={(keyword) => void runSearch(keyword)} /> : null}
         </div>
+      </header>
 
-        {view === "week" ? (
-          <>
-            {cards.length === 0 && !isLoading ? <div className="empty-week">本周还空着</div> : null}
-
-            <div
-              ref={viewportRef}
-              className={`canvas-viewport${isPanning ? " is-panning" : ""}`}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerUp}
-              onDoubleClick={handleDoubleClick}
-            >
-              <div className="canvas-plane" style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}>
-                {textComposer ? (
-                  <form
-                    className="inline-composer"
-                    onSubmit={handleComposerSubmit}
-                    style={{ transform: `translate(${textComposer.x}px, ${textComposer.y}px)` }}
-                  >
-                    <Textarea
-                      autoFocus
-                      value={textComposer.text}
-                      onChange={(event) => setTextComposer((current) => (current ? { ...current, text: event.target.value } : current))}
-                      placeholder="写下灵感、片段或网址"
-                      aria-label="文本灵感"
-                    />
-                    <div className="inline-composer-actions">
-                      <Button type="button" variant="ghost" size="icon" title="关闭" onClick={() => setTextComposer(null)}>
-                        <X size={15} />
-                      </Button>
-                      <Button type="submit" variant="primary" size="sm" disabled={!textComposer.text.trim()}>
-                        <Plus size={15} />
-                        添加
-                      </Button>
-                    </div>
-                  </form>
-                ) : null}
-                {cards.map((card) => (
-                  <BoardCard
-                    key={card.id}
-                    card={card}
-                    isHighlighted={card.id === highlightedCardId}
-                    onMove={handleMove}
-                    onDelete={handleDelete}
-                    onRetry={handleRetry}
-                    onCopyKeyword={handleCopyKeyword}
-                    onDeleteKeyword={handleDeleteKeyword}
-                    onOpenImage={openImagePreview}
-                  />
-                ))}
-              </div>
-            </div>
-
-          </>
-        ) : null}
-
-        {view === "search" ? (
-          <SearchResultsView query={searchQuery} results={searchResults} isLoading={isSearchLoading} onOpenCard={handleOpenSearchResult} />
-        ) : null}
-
-        {view === "graph" ? (
-          <KnowledgeGraphView
-            graph={graphData}
-            isLoading={isGraphLoading}
-            onOpenCard={openCardWeek}
-            onSearchKeyword={(keyword) => void runSearch(keyword)}
+      <main className={`board-wrap view-${knowledge.view}`}>
+        {knowledge.view === "board" ? (
+          <BoardPage
+            cards={board.cards}
+            isLoading={board.isLoading}
+            isPanning={board.isPanning}
+            viewportRef={board.viewportRef}
+            pan={board.pan}
+            zoom={board.zoom}
+            textComposer={board.textComposer}
+            highlightedCardId={board.highlightedCardId}
+            onTextComposerChange={board.setTextComposer}
+            onComposerSubmit={board.handleComposerSubmit}
+            onPointerDown={board.handlePointerDown}
+            onPointerMove={board.handlePointerMove}
+            onPointerUp={board.handlePointerUp}
+            onDoubleClick={board.handleDoubleClick}
+            onMove={board.handleMove}
+            onDelete={board.handleDelete}
+            onRetry={board.handleRetry}
+            onCopyKeyword={board.handleCopyKeyword}
+            onDeleteKeyword={board.handleDeleteKeyword}
+            onOpenImage={board.openImagePreview}
           />
         ) : null}
 
-        {imagePreview ? (
-          <ImagePreviewOverlay preview={imagePreview} onChange={setImagePreview} onClose={() => setImagePreview(null)} />
+        {knowledge.view === "search" ? (
+          <SearchPage
+            query={knowledge.searchQuery}
+            results={knowledge.searchResults}
+            isLoading={knowledge.isSearchLoading}
+            onOpenCard={handleOpenSearchResult}
+          />
         ) : null}
+
+        {knowledge.view === "knowledge" ? (
+          <KnowledgeMapPage
+            graph={knowledge.graphData}
+            pages={knowledge.knowledgePages}
+            isLoading={knowledge.isGraphLoading}
+            onOpenCard={board.openCardWeek}
+            onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)}
+          />
+        ) : null}
+
+        {board.imagePreview ? (
+          <ImagePreviewOverlay
+            preview={board.imagePreview}
+            onChange={board.setImagePreview}
+            onClose={() => board.setImagePreview(null)}
+          />
+        ) : null}
+        <SuggestionsPanel
+          suggestions={knowledge.reflections}
+          onAccept={knowledge.handleAcceptReflection}
+          onDismiss={knowledge.handleDismissReflection}
+        />
         {error ? <div className="error-banner">{error}</div> : null}
         {toast ? <div className="toast">{toast}</div> : null}
       </main>

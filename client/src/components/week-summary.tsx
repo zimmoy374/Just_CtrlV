@@ -1,11 +1,11 @@
 import { NotebookTabs, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import type { InspirationCard } from "../types"
+import type { CaptureCard } from "../types/cards"
 import { Button } from "./ui/button"
 
 type WeekSummaryProps = {
-  cards: InspirationCard[]
+  cards: CaptureCard[]
   weekTitle: string
   onSearchKeyword: (keyword: string) => void
 }
@@ -59,7 +59,7 @@ export function WeekSummary({ cards, weekTitle, onSearchKeyword }: WeekSummaryPr
 
   return (
     <div className="week-summary-float" ref={panelRef}>
-      <button type="button" className="summary-pin" title="周总结" aria-expanded={isOpen} onClick={() => setIsOpen((current) => !current)}>
+      <button type="button" className={`summary-pin${isOpen ? " is-active" : ""}`} title="周总结" aria-expanded={isOpen} onClick={() => setIsOpen((current) => !current)}>
         <NotebookTabs size={19} />
       </button>
 
@@ -105,3 +105,5 @@ export function WeekSummary({ cards, weekTitle, onSearchKeyword }: WeekSummaryPr
     </div>
   )
 }
+
+

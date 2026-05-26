@@ -1,9 +1,9 @@
 import { motion, type PanInfo } from "framer-motion"
-import { Clipboard, Copy, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react"
+import { Clipboard, Copy, ExternalLink, Link, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react"
 
-import { resolveAssetUrl } from "../lib/api"
+import { resolveAssetUrl } from "../lib/api/client"
 import { hashSeed } from "../lib/utils"
-import type { AiStatus, InspirationCard } from "../types"
+import type { AiStatus, CaptureCard } from "../types/cards"
 import { Button } from "./ui/button"
 
 const STATUS_LABEL: Record<AiStatus, string> = {
@@ -14,14 +14,15 @@ const STATUS_LABEL: Record<AiStatus, string> = {
 }
 
 type BoardCardProps = {
-  card: InspirationCard
+  card: CaptureCard
   isHighlighted?: boolean
-  onMove: (card: InspirationCard, x: number, y: number) => void
-  onDelete: (card: InspirationCard) => void
-  onRetry: (card: InspirationCard) => void
+  onMove: (card: CaptureCard, x: number, y: number) => void
+  onDelete: (card: CaptureCard) => void
+  onRetry: (card: CaptureCard) => void
   onCopyKeyword: (keyword: string) => void
-  onDeleteKeyword: (card: InspirationCard, keyword: string) => void
-  onOpenImage: (card: InspirationCard) => void
+  onDeleteKeyword: (card: CaptureCard, keyword: string) => void
+  onOpenImage: (card: CaptureCard) => void
+  canvasScale: number
 }
 
 export function BoardCard({
@@ -33,15 +34,17 @@ export function BoardCard({
   onCopyKeyword,
   onDeleteKeyword,
   onOpenImage,
+  canvasScale,
 }: BoardCardProps) {
   const seed = hashSeed(card.styleSeed)
   const palette = seed % 8
   const decoration = seed % 8
-  const baseClass = card.type === "text" ? `inspiration-card text-card palette-${palette}` : "inspiration-card image-card"
+  const baseClass =
+    card.type === "image" ? "capture-card image-card" : card.type === "link" ? "capture-card link-card" : `capture-card text-card palette-${palette}`
   const className = `${baseClass}${isHighlighted ? " is-highlighted" : ""}`
 
   const handleDragEnd = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
-    onMove(card, Math.round(card.x + info.offset.x), Math.round(card.y + info.offset.y))
+    onMove(card, Math.round(card.x + info.offset.x / canvasScale), Math.round(card.y + info.offset.y / canvasScale))
   }
 
   return (
@@ -70,7 +73,7 @@ export function BoardCard({
           <div className="image-frame">
             <img
               src={resolveAssetUrl(card.imageUrl)}
-              alt={card.summary || "灵感截图"}
+              alt={card.summary || "知识截图"}
               draggable={false}
               onDoubleClick={(event) => {
                 event.stopPropagation()
@@ -78,6 +81,18 @@ export function BoardCard({
               }}
             />
           </div>
+        ) : card.type === "link" ? (
+          <a className="link-preview" href={card.sourceUrl || "#"} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+            <span className="link-preview-icon">
+              <Link size={18} />
+            </span>
+            <strong>{card.sourceTitle || card.sourceUrl || "链接"}</strong>
+            {card.sourceDescription ? <span>{card.sourceDescription}</span> : null}
+            <em>
+              打开链接
+              <ExternalLink size={13} />
+            </em>
+          </a>
         ) : (
           <p className="text-content">{card.textContent}</p>
         )}
@@ -99,7 +114,7 @@ function KeywordArea({
   onCopyKeyword,
   onDeleteKeyword,
 }: {
-  card: InspirationCard
+  card: CaptureCard
   onCopyKeyword: (keyword: string) => void
   onDeleteKeyword: (keyword: string) => void
 }) {
@@ -141,3 +156,5 @@ function KeywordArea({
     </div>
   )
 }
+
+

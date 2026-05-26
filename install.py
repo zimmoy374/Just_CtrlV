@@ -30,7 +30,7 @@ def main() -> None:
 
     if not (ROOT / ".env").exists() and (ROOT / ".env.example").exists():
         shutil.copyfile(ROOT / ".env.example", ROOT / ".env")
-        print("已创建 .env，请按你的模型服务填写 OPENAI_API_KEY 或 GEMINI_API_KEY。")
+        print("已创建 .env，请按你的 OpenAI 兼容模型服务填写 OPENAI_API_KEY。")
 
     print("")
     print("安装完成。以后直接双击 run.py，或运行 python run.py。")

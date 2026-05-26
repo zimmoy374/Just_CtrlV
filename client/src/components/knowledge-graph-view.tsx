@@ -14,7 +14,8 @@ import { ExternalLink, Network, Search } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { PointerEvent as ReactPointerEvent } from "react"
 
-import type { InspirationCard, KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgeGraphResponse } from "../types"
+import type { CaptureCard } from "../types/cards"
+import type { KnowledgeGraphEdge, KnowledgeGraphNode, KnowledgeGraphResponse } from "../types/knowledge"
 import { Button } from "./ui/button"
 
 const GRAPH_WIDTH = 1040
@@ -26,7 +27,7 @@ type GraphLinkDatum = KnowledgeGraphEdge & SimulationLinkDatum<GraphNodeDatum>
 type KnowledgeGraphViewProps = {
   graph: KnowledgeGraphResponse | null
   isLoading: boolean
-  onOpenCard: (card: InspirationCard) => void
+  onOpenCard: (card: CaptureCard) => void
   onSearchKeyword: (keyword: string) => void
 }
 
@@ -44,7 +45,7 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
 
     const nodes: GraphNodeDatum[] = graph.nodes.map((node, index) => ({
       ...node,
-      radius: node.type === "keyword" ? Math.min(34, 16 + node.count * 2) : 8,
+      radius: node.type === "keyword" ? Math.min(34, 16 + node.count * 2) : node.type === "page" ? Math.min(30, 18 + node.count) : 8,
       x: GRAPH_WIDTH / 2 + Math.cos(index) * 90,
       y: GRAPH_HEIGHT / 2 + Math.sin(index) * 90,
     }))
@@ -56,10 +57,10 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
         "link",
         forceLink<GraphNodeDatum, GraphLinkDatum>(links)
           .id((node) => node.id)
-          .distance((link) => (getNodeType(link.source) === "keyword" ? 96 : 76))
+          .distance((link) => (getNodeType(link.source) === "keyword" ? 96 : 82))
           .strength(0.55),
       )
-      .force("charge", forceManyBody<GraphNodeDatum>().strength((node) => (node.type === "keyword" ? -420 : -140)))
+      .force("charge", forceManyBody<GraphNodeDatum>().strength((node) => (node.type === "keyword" ? -420 : node.type === "page" ? -360 : -140)))
       .force("collide", forceCollide<GraphNodeDatum>().radius((node) => node.radius + 12))
       .force("x", forceX<GraphNodeDatum>(GRAPH_WIDTH / 2).strength(0.035))
       .force("y", forceY<GraphNodeDatum>(GRAPH_HEIGHT / 2).strength(0.045))
@@ -74,19 +75,23 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
   }, [graph])
 
   const selectedNode =
-    layout.nodes.find((node) => node.id === selectedId) ?? layout.nodes.find((node) => node.type === "keyword") ?? layout.nodes[0] ?? null
+    layout.nodes.find((node) => node.id === selectedId) ??
+    layout.nodes.find((node) => node.type === "keyword" || node.type === "page") ??
+    layout.nodes[0] ??
+    null
   const activeSelectedId = selectedNode?.id ?? null
-  const detailCards = useMemo(() => {
+  const detailItems = useMemo(() => {
     if (!graph || !selectedNode) return []
-    if (selectedNode.type === "card") {
-      return selectedNode.card ? [selectedNode.card] : []
+    if (selectedNode.type === "item") {
+      return selectedNode.knowledgeItem ? [selectedNode] : []
     }
-    const cardNodeIds = graph.edges
+    const itemNodeIds = graph.edges
       .filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id)
       .map((edge) => (edge.source === selectedNode.id ? edge.target : edge.source))
-    return cardNodeIds
-      .map((id) => graph.nodes.find((node) => node.id === id)?.card)
-      .filter((card): card is InspirationCard => Boolean(card))
+      .filter((id) => String(id).startsWith("item:"))
+    return itemNodeIds
+      .map((id) => graph.nodes.find((node) => node.id === id))
+      .filter((node): node is KnowledgeGraphNode => Boolean(node?.knowledgeItem))
   }, [graph, selectedNode])
 
   const linkLines = layout.links
@@ -147,7 +152,7 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
       <section className="graph-view graph-empty">
         <div className="soft-empty">
           <Network size={30} />
-          <span>暂时没有形成跨卡片关联的关键词</span>
+          <span>暂时没有形成正式知识关联</span>
         </div>
       </section>
     )
@@ -175,10 +180,10 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
               <g key={node.id} transform={`translate(${node.x ?? 0}, ${node.y ?? 0})`}>
                 <circle
                   r={node.radius}
-                  className={`${node.type === "keyword" ? "keyword-node" : "card-node"}${node.id === activeSelectedId ? " selected" : ""}`}
+                  className={`${node.type === "keyword" ? "keyword-node" : node.type === "page" ? "page-node" : "item-node"}${node.id === activeSelectedId ? " selected" : ""}`}
                   onPointerDown={(event) => handleNodePointerDown(node, event)}
                 />
-                <text y={node.type === "keyword" ? node.radius + 16 : 21}>{node.label}</text>
+                <text y={node.type === "item" ? 21 : node.radius + 16}>{node.label}</text>
               </g>
             ))}
           </g>
@@ -188,12 +193,12 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
       <aside className="graph-detail">
         {selectedNode ? (
           <>
-            <span className="view-kicker">{selectedNode.type === "keyword" ? "Keyword Node" : "Card Node"}</span>
+            <span className="view-kicker">{selectedNode.type === "keyword" ? "Keyword Node" : selectedNode.type === "page" ? "Knowledge Page" : "Knowledge Item"}</span>
             <h2>{selectedNode.label}</h2>
             {selectedNode.type === "keyword" ? (
               <>
                 <div className="graph-detail-stats">
-                  <span>{selectedNode.count} 张卡片</span>
+                  <span>{selectedNode.count} 条知识</span>
                   <span>{selectedNode.weeks.length} 个周</span>
                 </div>
                 <Button type="button" variant="secondary" size="sm" onClick={() => onSearchKeyword(selectedNode.label)}>
@@ -201,18 +206,23 @@ export function KnowledgeGraphView({ graph, isLoading, onOpenCard, onSearchKeywo
                   搜索这个词
                 </Button>
               </>
+            ) : selectedNode.type === "page" ? (
+              <div className="graph-detail-stats">
+                <span>{selectedNode.status || "draft"}</span>
+                <span>{selectedNode.itemCount} 条知识</span>
+              </div>
             ) : selectedNode.card ? (
-              <Button type="button" variant="secondary" size="sm" onClick={() => onOpenCard(selectedNode.card!)}>
+              <Button type="button" variant="secondary" size="sm" onClick={() => onOpenCard(selectedNode.card as CaptureCard)}>
                 <ExternalLink size={15} />
                 回到原卡片
               </Button>
             ) : null}
 
             <div className="graph-detail-list">
-              {detailCards.map((card) => (
-                <button type="button" key={card.id} onClick={() => onOpenCard(card)}>
-                  <strong>{card.summary || card.textContent || "灵感卡片"}</strong>
-                  <span>{card.weekKey}</span>
+              {detailItems.map((node) => (
+                <button type="button" key={node.id} onClick={() => node.card && onOpenCard(node.card)}>
+                  <strong>{node.knowledgeItem?.summary || node.knowledgeItem?.title || "知识条目"}</strong>
+                  <span>{node.card ? node.card.weekKey : node.knowledgeItem?.sourceRef || node.knowledgeItem?.source}</span>
                 </button>
               ))}
             </div>
@@ -229,5 +239,11 @@ function resolveLinkNode(value: string | number | GraphNodeDatum, nodes: GraphNo
 }
 
 function getNodeType(value: string | number | GraphNodeDatum) {
-  return typeof value === "object" ? value.type : "keyword"
+  if (typeof value === "object") return value.type
+  const id = String(value)
+  if (id.startsWith("page:")) return "page"
+  if (id.startsWith("item:")) return "item"
+  return "keyword"
 }
+
+

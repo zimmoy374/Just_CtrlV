@@ -2,34 +2,35 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from copy import deepcopy
 from base64 import b64encode
+from copy import deepcopy
 from json import JSONDecodeError
 from pathlib import Path
 
 import httpx
-from google import genai
-from google.genai import types
-from sqlmodel import Session
 
-from .database import engine
-from .models import Card, utc_now
+from .models import Card
 from .settings import settings
 
 
 TEXT_PROMPT = """
-你是一个灵感剪切板助手。请根据用户粘贴的文本，提炼一句不超过 40 字的中文总结，
+你是 Just Ctrl V 的知识采集整理助手。请根据用户粘贴的文本，提炼一句不超过 40 字的中文总结，
+并给出 5 到 7 个短关键词。关键词要像要点标签，清晰、可复用。
+只返回 JSON，格式为 {"summary":"...","keywords":["..."]}。
+"""
+
+LINK_PROMPT = """
+你是 Just Ctrl V 的链接知识整理助手。请根据网页标题、描述和正文提炼一句不超过 40 字的中文总结，
 并给出 5 到 7 个短关键词。关键词要像要点标签，清晰、可复用。
 只返回 JSON，格式为 {"summary":"...","keywords":["..."]}。
 """
 
 IMAGE_PROMPT = """
-你是一个视觉灵感剪切板助手。请观察图片里的内容信息，
-提炼一句不超过 40 字的中文总结，并给出 5 到 10 个短关键词。
-关键词要像灵感标签，清晰、可复用。
+你是 Just Ctrl V 的视觉知识整理助手。请观察图片里的内容信息，
+提炼一句不超过 40 字的中文总结，并给出 5 到 7 个短关键词。
+关键词要像知识标签，清晰、可复用。
 只返回 JSON，格式为 {"summary":"...","keywords":["..."]}。
 """
-
 
 def _clean_json(text: str) -> dict:
     stripped = text.strip()
@@ -64,9 +65,9 @@ def _friendly_ai_error(exc: Exception) -> str:
 
 def _normalize_result(payload: dict) -> tuple[str, list[str]]:
     summary = str(payload.get("summary") or "").strip()
-    raw_keywords = payload.get("keywords") or []
+    keyword_values = payload.get("keywords") or []
     keywords = []
-    for item in raw_keywords:
+    for item in keyword_values:
         keyword = str(item).strip()
         if keyword and keyword not in keywords:
             keywords.append(keyword)
@@ -74,40 +75,17 @@ def _normalize_result(payload: dict) -> tuple[str, list[str]]:
 
 
 def _missing_config_error() -> str | None:
-    if settings.ai_provider == "openai":
-        if not settings.openai_api_key:
-            return "OPENAI_API_KEY 未配置"
-        if not settings.openai_model:
-            return "OPENAI_MODEL 未配置"
-        if not settings.openai_base_url:
-            return "OPENAI_BASE_URL 未配置"
-        return None
-    if not settings.gemini_api_key:
-        return "GEMINI_API_KEY 未配置"
+    if not settings.openai_api_key:
+        return "OPENAI_API_KEY 未配置"
+    if not settings.openai_model:
+        return "OPENAI_MODEL 未配置"
+    if not settings.openai_base_url:
+        return "OPENAI_BASE_URL 未配置"
     return None
 
 
-def _analyze_with_gemini(card: Card) -> dict:
-    client = genai.Client(api_key=settings.gemini_api_key)
-    contents: list[object]
-    if card.type == "image":
-        if not card.image_filename:
-            raise ValueError("图片文件不存在")
-        image_path = Path(settings.upload_dir) / card.image_filename
-        mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
-        contents = [
-            IMAGE_PROMPT,
-            types.Part.from_bytes(data=image_path.read_bytes(), mime_type=mime_type),
-        ]
-    else:
-        contents = [TEXT_PROMPT, card.text_content or ""]
-
-    response = client.models.generate_content(
-        model=settings.gemini_model,
-        contents=contents,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-    return _clean_json(response.text or "{}")
+def get_ai_config_error() -> str | None:
+    return _missing_config_error()
 
 
 def _openai_content(card: Card) -> list[dict]:
@@ -121,10 +99,17 @@ def _openai_content(card: Card) -> list[dict]:
             {"type": "text", "text": IMAGE_PROMPT},
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
+    if card.type == "link":
+        return [
+            {
+                "type": "text",
+                "text": f"{LINK_PROMPT}\n\n网页标题：\n{card.source_title or ''}\n\n网页描述：\n{card.source_description or ''}\n\n网页正文：\n{card.text_content or ''}",
+            },
+        ]
     return [{"type": "text", "text": f"{TEXT_PROMPT}\n\n用户文本：\n{card.text_content or ''}"}]
 
 
-def _analyze_with_openai_compatible(card: Card) -> dict:
+def _analyze_with_provider(card: Card) -> dict:
     payload = {
         "model": settings.openai_model,
         "messages": [{"role": "user", "content": _openai_content(card)}],
@@ -158,57 +143,7 @@ def _analyze_with_openai_compatible(card: Card) -> dict:
             return _clean_json(retry_content)
 
 
-def _analyze_with_provider(card: Card) -> dict:
-    if settings.ai_provider == "openai":
-        return _analyze_with_openai_compatible(card)
-    if settings.ai_provider != "gemini":
-        raise ValueError(f"不支持的 AI_PROVIDER: {settings.ai_provider}")
-    return _analyze_with_gemini(card)
-
-
 def analyze_card(card_id: str) -> None:
-    with Session(engine) as session:
-        card = session.get(Card, card_id)
-        if not card:
-            return
+    from .analysis.jobs import run_card_analysis_now
 
-        config_error = _missing_config_error()
-        if config_error:
-            card.ai_status = "failed"
-            card.ai_error = config_error
-            card.updated_at = utc_now()
-            session.add(card)
-            session.commit()
-            return
-
-        card.ai_status = "generating"
-        card.ai_error = None
-        card.updated_at = utc_now()
-        session.add(card)
-        session.commit()
-
-        try:
-            payload = _analyze_with_provider(card)
-            summary, keywords = _normalize_result(payload)
-            if not summary and not keywords:
-                raise ValueError("AI 返回为空")
-
-            card = session.get(Card, card_id)
-            if not card:
-                return
-            card.summary = summary
-            card.keywords = keywords
-            card.ai_status = "done"
-            card.ai_error = None
-            card.updated_at = utc_now()
-            session.add(card)
-            session.commit()
-        except Exception as exc:
-            card = session.get(Card, card_id)
-            if not card:
-                return
-            card.ai_status = "failed"
-            card.ai_error = _friendly_ai_error(exc)
-            card.updated_at = utc_now()
-            session.add(card)
-            session.commit()
+    run_card_analysis_now(card_id, reason="legacy-direct-call")
