@@ -1,2 +1,1 @@
-"""Capture adapters for UI artifacts such as cards."""
-
+"""Capture services for UI artifacts such as cards."""

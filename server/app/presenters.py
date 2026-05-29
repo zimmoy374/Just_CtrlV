@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from .models import Card, KnowledgeItem, MemoryProposal, Reflection, TaskCheckpoint, TaskEvent, TaskSession, TaskState
+from .models import Card, HandoffPack, KnowledgeItem, MemoryProposal, Reflection, TaskCheckpoint, TaskEvent, TaskSession, TaskState
 from .schemas import (
     CardResponse,
+    HandoffPackResponse,
     KnowledgeItemResponse,
     MemoryProposalResponse,
     ReflectionResponse,
@@ -74,14 +75,20 @@ def memory_proposal_to_response(proposal: MemoryProposal) -> MemoryProposalRespo
     return MemoryProposalResponse(
         id=proposal.id,
         taskSessionId=proposal.task_session_id,
+        targetStore=proposal.target_store,
         type=proposal.type,
         title=proposal.title,
         body=proposal.body,
+        structuredPayload=proposal.structured_payload_json or {},
+        scope=proposal.scope,
         evidenceRefs=proposal.evidence_refs or [],
+        confidence=proposal.confidence,
+        reviewNote=proposal.review_note,
         status=proposal.status,
         sourceItemId=proposal.source_item_id,
         knowledgeItemId=proposal.knowledge_item_id,
         pageId=proposal.page_id,
+        decisionRef=proposal.decision_ref,
         createdAt=proposal.created_at,
         resolvedAt=proposal.resolved_at,
     )
@@ -156,4 +163,16 @@ def task_detail_to_response(
         state=task_state_to_response(state),
         events=[task_event_to_response(event) for event in events],
         checkpoints=[task_checkpoint_to_response(checkpoint) for checkpoint in checkpoints],
+    )
+
+
+def handoff_pack_to_response(handoff: HandoffPack, pack: dict) -> HandoffPackResponse:
+    return HandoffPackResponse(
+        id=handoff.id,
+        taskSessionId=handoff.task_session_id,
+        format=handoff.format,
+        content=handoff.content,
+        pack=pack,
+        budget=handoff.budget_json or {},
+        createdAt=handoff.created_at,
     )

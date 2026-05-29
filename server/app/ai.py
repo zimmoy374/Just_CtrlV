@@ -146,4 +146,4 @@ def _analyze_with_provider(card: Card) -> dict:
 def analyze_card(card_id: str) -> None:
     from .analysis.jobs import run_card_analysis_now
 
-    run_card_analysis_now(card_id, reason="legacy-direct-call")
+    run_card_analysis_now(card_id, reason="direct-card-analysis")

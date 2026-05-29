@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from ..database import get_session
-from ..models import TaskSession
+from ..models import TaskSession, utc_now
 from ..presenters import (
+    handoff_pack_to_response,
     task_checkpoint_to_response,
     task_detail_to_response,
     task_event_to_response,
@@ -18,6 +19,7 @@ from ..schemas import (
     TaskDetailResponse,
     TaskEventCreate,
     TaskEventResponse,
+    HandoffPackResponse,
     TaskSessionCreate,
     TaskSessionResponse,
     TaskStatePatch,
@@ -25,6 +27,7 @@ from ..schemas import (
 )
 from ..tasks.checkpoints import create_task_checkpoint, list_task_checkpoints
 from ..tasks.events import append_task_event, list_task_events
+from ..tasks.handoff import create_handoff_pack, preview_handoff_pack
 from ..tasks.sessions import (
     archive_task_session,
     close_task_session,
@@ -133,6 +136,56 @@ def create_task_checkpoint_api(
     session.commit()
     session.refresh(checkpoint)
     return task_checkpoint_to_response(checkpoint)
+
+
+@router.get("/api/tasks/{task_id}/handoff", response_model=HandoffPackResponse)
+def get_task_handoff_api(
+    task_id: str,
+    format: str = Query(default="markdown"),
+    include_closed: bool = Query(default=False, alias="includeClosed"),
+    session: Session = Depends(get_session),
+) -> HandoffPackResponse:
+    task = _require_task(session, task_id)
+    try:
+        pack, content, budget = preview_handoff_pack(
+            session,
+            task,
+            handoff_format=format,
+            include_closed=include_closed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return HandoffPackResponse(
+        id=None,
+        taskSessionId=task.id,
+        format=format,
+        content=content,
+        pack=pack,
+        budget=budget,
+        createdAt=utc_now(),
+    )
+
+
+@router.post("/api/tasks/{task_id}/handoff", response_model=HandoffPackResponse)
+def create_task_handoff_api(
+    task_id: str,
+    format: str = Query(default="markdown"),
+    include_closed: bool = Query(default=False, alias="includeClosed"),
+    session: Session = Depends(get_session),
+) -> HandoffPackResponse:
+    task = _require_task(session, task_id)
+    try:
+        handoff, pack = create_handoff_pack(
+            session,
+            task,
+            handoff_format=format,
+            include_closed=include_closed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(handoff)
+    return handoff_pack_to_response(handoff, pack)
 
 
 @router.post("/api/tasks/{task_id}/pause", response_model=TaskDetailResponse)

@@ -226,14 +226,20 @@ class ExportBundleResponse(BaseModel):
 class MemoryProposalResponse(BaseModel):
     id: str
     task_session_id: Optional[str] = Field(default=None, alias="taskSessionId")
+    target_store: str = Field(alias="targetStore")
     type: str
     title: str
     body: str
+    structured_payload: dict = Field(alias="structuredPayload")
+    scope: str
     evidence_refs: list[str] = Field(alias="evidenceRefs")
+    confidence: Optional[float] = None
+    review_note: str = Field(alias="reviewNote")
     status: str
     source_item_id: Optional[str] = Field(default=None, alias="sourceItemId")
     knowledge_item_id: Optional[str] = Field(default=None, alias="knowledgeItemId")
     page_id: Optional[str] = Field(default=None, alias="pageId")
+    decision_ref: Optional[str] = Field(default=None, alias="decisionRef")
     created_at: datetime = Field(alias="createdAt")
     resolved_at: Optional[datetime] = Field(default=None, alias="resolvedAt")
 
@@ -343,6 +349,18 @@ class TaskDetailResponse(BaseModel):
     state: TaskStateResponse
     events: list[TaskEventResponse]
     checkpoints: list[TaskCheckpointResponse]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class HandoffPackResponse(BaseModel):
+    id: Optional[str] = None
+    task_session_id: str = Field(alias="taskSessionId")
+    format: str
+    content: str
+    pack: dict
+    budget: dict
+    created_at: datetime = Field(alias="createdAt")
 
     model_config = ConfigDict(populate_by_name=True)
 

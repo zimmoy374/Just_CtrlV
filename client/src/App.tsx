@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Home, Network, Search, Sparkles } from "lucide-react"
+import { ChevronLeft, ChevronRight, ClipboardList, Home, Network, Search, Sparkles } from "lucide-react"
 
 import { ImagePreviewOverlay } from "./components/image-preview-overlay"
 import { SuggestionsPanel } from "./components/suggestions-panel"
@@ -7,9 +7,11 @@ import { Button } from "./components/ui/button"
 import { WeekSummary } from "./components/week-summary"
 import { useBoardController } from "./hooks/useBoardController"
 import { useKnowledgeWorkspace } from "./hooks/useKnowledgeWorkspace"
+import { useTaskWorkspace } from "./hooks/useTaskWorkspace"
 import { BoardPage } from "./pages/BoardPage"
 import { KnowledgeMapPage } from "./pages/KnowledgeMapPage"
 import { SearchPage } from "./pages/SearchPage"
+import { TaskWorkbenchPage } from "./pages/TaskWorkbenchPage"
 import type { KnowledgeSearchResult } from "./types/retrieval"
 
 function App() {
@@ -17,6 +19,7 @@ function App() {
   const [toast, setToast] = useState<string | null>(null)
 
   const knowledge = useKnowledgeWorkspace({ setError, setToast })
+  const tasks = useTaskWorkspace({ setError, setToast })
   const board = useBoardController({
     view: knowledge.view,
     setView: knowledge.setView,
@@ -95,6 +98,15 @@ function App() {
           >
             <Network size={18} />
           </button>
+          <button
+            type="button"
+            className={`topbar-tool${knowledge.view === "tasks" ? " is-active" : ""}`}
+            title="任务工作台"
+            onClick={() => knowledge.setView("tasks")}
+          >
+            <ClipboardList size={18} />
+            {tasks.activeTasks.length > 0 ? <span className="tool-count">{tasks.activeTasks.length}</span> : null}
+          </button>
           <button type="button" className="topbar-tool" title="回到本周" onClick={board.goToday}>
             <Home size={18} />
           </button>
@@ -143,6 +155,25 @@ function App() {
             isLoading={knowledge.isGraphLoading}
             onOpenCard={board.openCardWeek}
             onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)}
+          />
+        ) : null}
+
+        {knowledge.view === "tasks" ? (
+          <TaskWorkbenchPage
+            activeTasks={tasks.activeTasks}
+            selectedTaskId={tasks.selectedTaskId}
+            detail={tasks.taskDetail}
+            handoff={tasks.handoff}
+            memoryProposals={tasks.memoryProposals}
+            isTaskLoading={tasks.isTaskLoading}
+            isInboxLoading={tasks.isInboxLoading}
+            isHandoffCopying={tasks.isHandoffCopying}
+            onSelectTask={tasks.setSelectedTaskId}
+            onCopyHandoff={tasks.copyHandoff}
+            onFinishTask={tasks.finishSelectedTask}
+            onArchiveTask={tasks.archiveSelectedTask}
+            onAcceptProposal={tasks.acceptProposal}
+            onDismissProposal={tasks.dismissProposal}
           />
         ) : null}
 

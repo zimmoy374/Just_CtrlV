@@ -582,7 +582,7 @@ def test_accept_memory_proposal_creates_searchable_active_knowledge_item() -> No
 
     from server.app.database import engine
     from server.app.memory_kernel.proposals import create_memory_proposal
-    from server.app.models import KnowledgeItem
+    from server.app.models import KnowledgeItem, MemoryDecision, ProvenanceEvent
 
     marker = "接受记忆候选可检索标记"
     with Session(engine) as session:
@@ -601,6 +601,8 @@ def test_accept_memory_proposal_creates_searchable_active_knowledge_item() -> No
         assert accepted.status_code == 200
         payload = accepted.json()
         assert payload["status"] == "accepted"
+        assert payload["targetStore"] == "semantic_knowledge"
+        assert payload["decisionRef"]
         assert payload["knowledgeItemId"]
         assert payload["sourceItemId"]
 
@@ -611,8 +613,12 @@ def test_accept_memory_proposal_creates_searchable_active_knowledge_item() -> No
 
     with Session(engine) as session:
         knowledge_item = session.exec(select(KnowledgeItem).where(KnowledgeItem.id == payload["knowledgeItemId"])).one()
+        decisions = session.exec(select(MemoryDecision).where(MemoryDecision.target_ref == f"proposal:{proposal_id}")).all()
+        provenance_events = session.exec(select(ProvenanceEvent).where(ProvenanceEvent.from_ref == f"proposal:{proposal_id}")).all()
     assert knowledge_item.status == "active"
     assert knowledge_item.card_id is None
+    assert {decision.decision_type for decision in decisions} >= {"proposal_created", "proposal_routed", "proposal_accepted"}
+    assert any(event.event_type == "accepted_proposal_created_item" for event in provenance_events)
 
 
 def test_dismiss_memory_proposal_is_not_searchable_or_exported(tmp_path) -> None:
@@ -621,7 +627,7 @@ def test_dismiss_memory_proposal_is_not_searchable_or_exported(tmp_path) -> None
     from server.app.database import engine
     from server.app.export.bundle import export_knowledge_bundle
     from server.app.memory_kernel.proposals import create_memory_proposal
-    from server.app.models import KnowledgeItem, SourceItem
+    from server.app.models import KnowledgeItem, MemoryDecision, ProvenanceEvent, SourceItem
 
     marker = "忽略记忆候选不导出标记"
     with Session(engine) as session:
@@ -640,6 +646,8 @@ def test_dismiss_memory_proposal_is_not_searchable_or_exported(tmp_path) -> None
         assert dismissed.status_code == 200
         payload = dismissed.json()
         assert payload["status"] == "dismissed"
+        assert payload["targetStore"] == "procedure_lesson"
+        assert payload["decisionRef"]
         assert payload["knowledgeItemId"] is None
         assert payload["sourceItemId"] is None
 
@@ -651,11 +659,15 @@ def test_dismiss_memory_proposal_is_not_searchable_or_exported(tmp_path) -> None
         export_root = export_knowledge_bundle(session, tmp_path)
         source_items = session.exec(select(SourceItem).where(SourceItem.external_id == f"memory-proposal:{proposal_id}")).all()
         knowledge_items = session.exec(select(KnowledgeItem).where(KnowledgeItem.title.contains(marker))).all()
+        decisions = session.exec(select(MemoryDecision).where(MemoryDecision.target_ref == f"proposal:{proposal_id}")).all()
+        provenance_events = session.exec(select(ProvenanceEvent).where(ProvenanceEvent.from_ref == f"proposal:{proposal_id}")).all()
 
     item_text = (export_root / "items.jsonl").read_text(encoding="utf-8")
     assert marker not in item_text
     assert source_items == []
     assert knowledge_items == []
+    assert any(decision.decision_type == "proposal_dismissed" for decision in decisions)
+    assert any(event.event_type == "proposal_dismissed" for event in provenance_events)
 
 
 def test_task_capsule_core_api_lifecycle() -> None:
@@ -743,6 +755,142 @@ def test_task_capsule_core_api_lifecycle() -> None:
         assert task_proposal["status"] == "pending"
         assert task_proposal["knowledgeItemId"] is None
         assert task_proposal["sourceItemId"] is None
+
+
+def test_open_task_handoff_contains_next_steps() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Handoff open task", "userGoal": "完成 handoff 协议", "activeAgent": "codex"},
+        ).json()
+        task_id = created["task"]["id"]
+
+        client.patch(
+            f"/api/tasks/{task_id}/state",
+            json={
+                "currentGoal": "交接给下一个执行者",
+                "done": ["完成核心任务 API"],
+                "inProgress": ["编写 handoff service"],
+                "nextSteps": ["运行 handoff 后端测试"],
+                "openQuestions": ["是否需要前端入口"],
+                "constraints": ["不启动本地服务"],
+                "decisions": ["GET 预览，POST 持久化"],
+                "risks": ["closed task 默认拒绝 handoff"],
+                "filesTouched": ["server/app/tasks/handoff.py"],
+            },
+        )
+        client.post(
+            f"/api/tasks/{task_id}/events",
+            json={"type": "file_change", "summary": "新增 handoff service", "sourceRef": "server/app/tasks/handoff.py"},
+        )
+        checkpoint = client.post(
+            f"/api/tasks/{task_id}/checkpoints",
+            json={"title": "handoff checkpoint", "summary": "handoff 协议字段已确定"},
+        ).json()
+
+        response = client.get(f"/api/tasks/{task_id}/handoff", params={"format": "json"})
+        assert response.status_code == 200
+        handoff = response.json()
+        pack = handoff["pack"]
+
+        assert pack["taskId"] == task_id
+        assert pack["status"] == "open"
+        assert pack["freshness"]["state"] == "fresh"
+        assert pack["userGoal"] == "完成 handoff 协议"
+        assert pack["currentGoal"] == "交接给下一个执行者"
+        assert pack["done"] == ["完成核心任务 API"]
+        assert pack["inProgress"] == ["编写 handoff service"]
+        assert pack["nextSteps"] == ["运行 handoff 后端测试"]
+        assert pack["openQuestions"] == ["是否需要前端入口"]
+        assert pack["constraints"] == ["不启动本地服务"]
+        assert pack["decisions"] == ["GET 预览，POST 持久化"]
+        assert pack["risks"] == ["closed task 默认拒绝 handoff"]
+        assert pack["filesTouched"] == ["server/app/tasks/handoff.py"]
+        assert any(ref["id"] == checkpoint["id"] for ref in pack["checkpointRefs"])
+        assert any(ref["sourceRef"] == "server/app/tasks/handoff.py" for ref in pack["sourceRefs"])
+        assert "运行 handoff 后端测试" in handoff["content"]
+
+
+def test_closed_task_handoff_is_rejected_by_default() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Closed handoff default", "userGoal": "验证 closed 默认拒绝"},
+        ).json()
+        task_id = created["task"]["id"]
+
+        assert client.post(f"/api/tasks/{task_id}/close").status_code == 200
+
+        response = client.get(f"/api/tasks/{task_id}/handoff", params={"format": "markdown"})
+        assert response.status_code == 409
+
+
+def test_include_closed_allows_closed_task_handoff() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Closed handoff include", "userGoal": "显式允许 closed handoff"},
+        ).json()
+        task_id = created["task"]["id"]
+        client.post(f"/api/tasks/{task_id}/close")
+
+        response = client.get(
+            f"/api/tasks/{task_id}/handoff",
+            params={"format": "json", "includeClosed": "true"},
+        )
+        assert response.status_code == 200
+        assert response.json()["pack"]["status"] == "closed"
+
+
+def test_expired_task_handoff_contains_stale_warning() -> None:
+    from datetime import timedelta
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.models import TaskSession, utc_now
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Expired handoff", "userGoal": "验证过期 handoff 警告"},
+        ).json()
+        task_id = created["task"]["id"]
+
+        with Session(engine) as session:
+            task = session.get(TaskSession, task_id)
+            assert task
+            task.status = "expired"
+            task.updated_at = utc_now() - timedelta(days=2)
+            task.expires_at = utc_now() - timedelta(minutes=1)
+            session.add(task)
+            session.commit()
+
+        response = client.get(f"/api/tasks/{task_id}/handoff", params={"format": "markdown"})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["pack"]["freshness"]["state"] == "expired"
+        assert payload["content"].startswith("> STALE WARNING:")
+
+
+def test_create_handoff_records_handoff_created_event() -> None:
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Persist handoff", "userGoal": "POST handoff 写事件"},
+        ).json()
+        task_id = created["task"]["id"]
+
+        response = client.post(f"/api/tasks/{task_id}/handoff", params={"format": "markdown"})
+        assert response.status_code == 200
+        handoff = response.json()
+        assert handoff["id"]
+        assert handoff["format"] == "markdown"
+
+        detail = client.get(f"/api/tasks/{task_id}").json()
+        handoff_event = next(event for event in detail["events"] if event["type"] == "handoff_created")
+        assert handoff_event["payload"]["handoffPackId"] == handoff["id"]
+        assert handoff_event["payload"]["format"] == "markdown"
 
 
 def test_context_pack_can_return_directly_matched_page_without_item_match() -> None:
@@ -845,3 +993,220 @@ def test_export_bundle_contains_wiki_items_sources_and_provenance(monkeypatch, t
     assert any((path / "metadata.json").exists() and (path / "content.txt").exists() for path in source_dirs)
 
 
+def test_export_bundle_contains_task_capsule_files(tmp_path) -> None:
+    import json
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.export.bundle import export_knowledge_bundle
+
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/tasks",
+            json={"title": "Export task files", "userGoal": "导出新增任务文件"},
+        ).json()["task"]
+        client.post(
+            f"/api/tasks/{task['id']}/events",
+            json={"type": "agent_action", "summary": "写入导出事件"},
+        )
+        client.post(
+            f"/api/tasks/{task['id']}/checkpoints",
+            json={"title": "导出检查点", "summary": "checkpoint 应进入 jsonl"},
+        )
+        client.post(f"/api/tasks/{task['id']}/handoff", params={"format": "markdown"})
+        client.post(f"/api/tasks/{task['id']}/close")
+
+    with Session(engine) as session:
+        export_root = export_knowledge_bundle(session, tmp_path)
+
+    assert (export_root / "task_sessions.jsonl").exists()
+    assert (export_root / "task_events.jsonl").exists()
+    assert (export_root / "task_checkpoints.jsonl").exists()
+    assert (export_root / "memory_proposals.jsonl").exists()
+    assert (export_root / "memory_decisions.jsonl").exists()
+    assert (export_root / "handoff_packs").is_dir()
+    assert (export_root / "handoff_packs" / "index.jsonl").exists()
+
+    manifest = json.loads((export_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contents"]["taskSessions"] == "task_sessions.jsonl"
+    assert manifest["contents"]["taskEvents"] == "task_events.jsonl"
+    assert manifest["contents"]["taskCheckpoints"] == "task_checkpoints.jsonl"
+    assert manifest["contents"]["memoryProposals"] == "memory_proposals.jsonl"
+    assert manifest["contents"]["memoryDecisions"] == "memory_decisions.jsonl"
+    assert manifest["contents"]["handoffPacks"] == "handoff_packs/"
+    assert manifest["counts"]["taskSessions"] >= 1
+    assert manifest["counts"]["taskEvents"] >= 1
+    assert manifest["counts"]["taskCheckpoints"] >= 1
+    assert manifest["counts"]["memoryProposals"] >= 1
+    assert manifest["counts"]["memoryDecisions"] >= 1
+    assert manifest["counts"]["handoffPacks"] >= 1
+
+
+def test_export_accepted_proposal_provenance_is_correct(tmp_path) -> None:
+    import json
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.export.bundle import export_knowledge_bundle
+    from server.app.memory_kernel.proposals import accept_memory_proposal, create_memory_proposal
+
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/tasks",
+            json={"title": "Accepted proposal provenance", "userGoal": "验证 proposal provenance"},
+        ).json()["task"]
+
+    with Session(engine) as session:
+        proposal = create_memory_proposal(
+            session,
+            proposal_type="technical_decision",
+            title="导出 proposal provenance 标题",
+            body="accepted proposal 应连到 task、source 和 knowledge item。",
+            evidence_refs=["test:export-accepted-proposal"],
+            task_session_id=task["id"],
+        )
+        accept_memory_proposal(session, proposal)
+        session.commit()
+        proposal_id = proposal.id
+        source_item_id = proposal.source_item_id
+        knowledge_item_id = proposal.knowledge_item_id
+
+        export_root = export_knowledge_bundle(session, tmp_path)
+
+    provenance = [json.loads(line) for line in (export_root / "provenance.jsonl").read_text(encoding="utf-8").splitlines()]
+    decisions = [json.loads(line) for line in (export_root / "memory_decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+    proposals = [json.loads(line) for line in (export_root / "memory_proposals.jsonl").read_text(encoding="utf-8").splitlines()]
+    proposal_payload = next(item for item in proposals if item["id"] == proposal_id)
+    assert proposal_payload["targetStore"] == "semantic_knowledge"
+    assert proposal_payload["decisionRef"]
+    assert any(item["decisionType"] == "proposal_accepted" and item["targetRef"] == f"proposal:{proposal_id}" for item in decisions)
+    assert any(line["type"] == "proposal_routed" and line["from"] == f"proposal:{proposal_id}" for line in provenance)
+    assert {
+        "type": "proposal_for_task",
+        "from": f"proposal:{proposal_id}",
+        "to": f"task:{task['id']}",
+    } in provenance
+    assert {
+        "type": "proposal_created_source",
+        "from": f"proposal:{proposal_id}",
+        "to": f"source:{source_item_id}",
+    } in provenance
+    assert {
+        "type": "accepted_proposal_created_item",
+        "from": f"proposal:{proposal_id}",
+        "to": f"item:{knowledge_item_id}",
+    } in provenance
+
+
+def test_export_accepted_page_update_proposal_provenance_is_correct(tmp_path) -> None:
+    import json
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.export.bundle import export_knowledge_bundle
+    from server.app.memory_kernel.proposals import accept_memory_proposal, create_memory_proposal
+
+    with Session(engine) as session:
+        proposal = create_memory_proposal(
+            session,
+            proposal_type="page_update",
+            title="导出 page proposal provenance",
+            body="page_update proposal 应连到 knowledge page。",
+            structured_payload={"body": "页面正文来自 reviewed proposal。"},
+            evidence_refs=["test:export-page-proposal"],
+            review_note="接受为主题页",
+        )
+        accept_memory_proposal(session, proposal)
+        session.commit()
+        proposal_id = proposal.id
+        page_id = proposal.page_id
+
+        export_root = export_knowledge_bundle(session, tmp_path)
+
+    proposals = [json.loads(line) for line in (export_root / "memory_proposals.jsonl").read_text(encoding="utf-8").splitlines()]
+    decisions = [json.loads(line) for line in (export_root / "memory_decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+    provenance = [json.loads(line) for line in (export_root / "provenance.jsonl").read_text(encoding="utf-8").splitlines()]
+    proposal_payload = next(item for item in proposals if item["id"] == proposal_id)
+
+    assert proposal_payload["targetStore"] == "semantic_knowledge"
+    assert proposal_payload["pageId"] == page_id
+    assert proposal_payload["knowledgeItemId"] is None
+    assert any(
+        item["decisionType"] == "proposal_accepted"
+        and item["targetRef"] == f"proposal:{proposal_id}"
+        and item["reason"] == "接受为主题页"
+        for item in decisions
+    )
+    assert any(line["type"] == "accepted_proposal_created_page" and line["from"] == f"proposal:{proposal_id}" for line in provenance)
+    assert {
+        "type": "accepted_proposal_created_page",
+        "from": f"proposal:{proposal_id}",
+        "to": f"page:{page_id}",
+    } in provenance
+
+
+def test_export_task_checkpoint_handoff_and_dismissed_proposal(tmp_path) -> None:
+    import json
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.export.bundle import export_knowledge_bundle
+    from server.app.memory_kernel.proposals import create_memory_proposal, dismiss_memory_proposal
+
+    marker = "dismissed proposal export only"
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/tasks",
+            json={"title": "Task checkpoint handoff export", "userGoal": "验证任务相关导出"},
+        ).json()["task"]
+        checkpoint = client.post(
+            f"/api/tasks/{task['id']}/checkpoints",
+            json={"title": "任务导出检查点", "summary": "checkpoint provenance 应连到 task"},
+        ).json()
+        handoff = client.post(f"/api/tasks/{task['id']}/handoff", params={"format": "markdown"}).json()
+
+    with Session(engine) as session:
+        proposal = create_memory_proposal(
+            session,
+            proposal_type="pitfall",
+            title=f"{marker} 标题",
+            body=f"{marker} 正文",
+            evidence_refs=["test:export-dismissed-proposal"],
+            task_session_id=task["id"],
+        )
+        dismiss_memory_proposal(session, proposal)
+        session.commit()
+        proposal_id = proposal.id
+
+        export_root = export_knowledge_bundle(session, tmp_path)
+
+    task_sessions = [json.loads(line) for line in (export_root / "task_sessions.jsonl").read_text(encoding="utf-8").splitlines()]
+    checkpoints = [json.loads(line) for line in (export_root / "task_checkpoints.jsonl").read_text(encoding="utf-8").splitlines()]
+    proposals = [json.loads(line) for line in (export_root / "memory_proposals.jsonl").read_text(encoding="utf-8").splitlines()]
+    decisions = [json.loads(line) for line in (export_root / "memory_decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+    provenance = [json.loads(line) for line in (export_root / "provenance.jsonl").read_text(encoding="utf-8").splitlines()]
+    handoff_index = [json.loads(line) for line in (export_root / "handoff_packs" / "index.jsonl").read_text(encoding="utf-8").splitlines()]
+    item_text = (export_root / "items.jsonl").read_text(encoding="utf-8")
+
+    assert any(item["id"] == task["id"] for item in task_sessions)
+    assert any(item["id"] == checkpoint["id"] and item["taskSessionId"] == task["id"] for item in checkpoints)
+    assert any(item["id"] == handoff["id"] and item["taskSessionId"] == task["id"] for item in handoff_index)
+    assert (export_root / "handoff_packs" / f"{handoff['id']}.md").exists()
+    assert any(item["id"] == proposal_id and item["status"] == "dismissed" and item["targetStore"] == "procedure_lesson" for item in proposals)
+    assert any(item["decisionType"] == "proposal_dismissed" and item["targetRef"] == f"proposal:{proposal_id}" for item in decisions)
+    assert any(item["type"] == "proposal_dismissed" and item["from"] == f"proposal:{proposal_id}" for item in provenance)
+    assert marker not in item_text
+    assert {
+        "type": "checkpoint_for_task",
+        "from": f"checkpoint:{checkpoint['id']}",
+        "to": f"task:{task['id']}",
+    } in provenance
+    assert {
+        "type": "handoff_for_task",
+        "from": f"handoff:{handoff['id']}",
+        "to": f"task:{task['id']}",
+    } in provenance

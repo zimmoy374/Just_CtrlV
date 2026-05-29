@@ -7,11 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from ..context.packs import build_context_pack
 from ..database import get_session
 from ..export.bundle import export_knowledge_bundle
 from ..knowledge_core.lifecycle import commit_knowledge_item
 from ..knowledge_core.source_items import upsert_source_item
+from ..memory_core.composer import MemoryContextComposer
 from ..models import Card, KnowledgeItem, KnowledgePage, KnowledgePageItemLink, Reflection
 from ..organization.suggestions import accept_reflection, create_page_update_suggestions, dismiss_reflection
 from ..presenters import card_to_response, knowledge_item_to_response, reflection_to_response
@@ -236,7 +236,7 @@ def get_knowledge_context(
     session: Session = Depends(get_session),
 ) -> ContextPackResponse:
     return ContextPackResponse.model_validate(
-        build_context_pack(
+        MemoryContextComposer().build_context_pack(
             session,
             query=q,
             max_pages=page_limit,

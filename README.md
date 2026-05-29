@@ -10,7 +10,7 @@
 python install.py
 ```
 
-打开 `.env`，填写 OpenAI 或 OpenAI 兼容接口：
+打开 `.env`，填写 OpenAI 或同协议模型接口：
 
 ```text
 OPENAI_API_KEY=sk-你的密钥
@@ -44,4 +44,22 @@ python run.py
 - 产品级统一检索入口是 `/api/knowledge/search`，当前会搜索正式 KnowledgeItem。
 - 外部 AI 可以通过 `/api/knowledge/context?q=...` 按预算读取 ContextPack，不需要也不应该全量读取知识库。
 - 外部 AI 已经让用户预览并确认的整理结果，可以通过 `/api/knowledge/import-confirmed` 写入正式知识库。
-- 用户卸载或迁移前，可以调用 `/api/knowledge/export` 导出 SourceItem、KnowledgeItem、KnowledgePage 和 provenance。
+- 用户卸载或迁移前，可以调用 `/api/knowledge/export` 导出 SourceItem、KnowledgeItem、KnowledgePage、Task Capsule、MemoryProposal、HandoffPack 和 provenance。
+
+## 架构约定
+
+- 架构先行：SourceItem、KnowledgeItem、KnowledgePage、provenance、export/migration 是稳定核心。
+- Task Capsule 是 Agent 协作层模块，用于任务状态、事件、检查点和 handoff，不是主架构，也不替代知识核心。
+- MemoryProposal 是长期记忆入口。Agent 可以追加 TaskEvent、创建 checkpoint/handoff、生成 pending MemoryProposal，但不能直接写 KnowledgeItem。
+- 用户手动 close task 是任务完成的强信号；系统不能因为测试通过、沉默或 agent 判断而自动完成任务。
+
+## 开发验证
+
+默认验收方式是不启动本地服务、不跑浏览器，直接跑命令：
+
+```powershell
+python -m pytest -q
+cd client
+npm run lint
+npm run build
+```

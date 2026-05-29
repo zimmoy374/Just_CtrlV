@@ -124,16 +124,52 @@ class MemoryProposal(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     task_session_id: Optional[str] = Field(default=None, index=True)
+    target_store: str = Field(index=True)
     type: str = Field(index=True)
     title: str
     body: str = Field(default="", sa_column=Column(Text, nullable=False))
+    structured_payload_json: dict = Field(default_factory=dict, sa_column=Column("structured_payload", JSON, nullable=False))
+    scope: str = Field(default="workspace", index=True)
     evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    confidence: Optional[float] = None
+    review_note: str = Field(default="", sa_column=Column(Text, nullable=False))
     status: str = Field(default="pending", index=True)
     source_item_id: Optional[str] = Field(default=None, index=True)
     knowledge_item_id: Optional[str] = Field(default=None, index=True)
     page_id: Optional[str] = Field(default=None, index=True)
+    decision_ref: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
     resolved_at: Optional[datetime] = None
+
+
+class MemoryDecision(SQLModel, table=True):
+    __tablename__ = "memory_decisions"
+
+    id: str = Field(primary_key=True)
+    decision_type: str = Field(index=True)
+    target_ref: str = Field(index=True)
+    actor: str = Field(default="user", index=True)
+    reason: str = Field(default="", sa_column=Column(Text, nullable=False))
+    policy: str = ""
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    confidence: Optional[float] = None
+    scope: str = Field(default="workspace", index=True)
+    metadata_json: dict = Field(default_factory=dict, sa_column=Column("metadata", JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ProvenanceEvent(SQLModel, table=True):
+    __tablename__ = "provenance_events"
+
+    id: str = Field(primary_key=True)
+    event_type: str = Field(index=True)
+    from_ref: Optional[str] = Field(default=None, index=True)
+    to_ref: Optional[str] = Field(default=None, index=True)
+    actor: str = Field(default="system", index=True)
+    reason: str = Field(default="", sa_column=Column(Text, nullable=False))
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    payload_json: dict = Field(default_factory=dict, sa_column=Column("payload", JSON, nullable=False))
+    occurred_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class SourceItem(SQLModel, table=True):

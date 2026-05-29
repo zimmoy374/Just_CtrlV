@@ -4,10 +4,11 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
-from ..knowledge_core.lifecycle import commit_knowledge_item
-from ..knowledge_core.source_items import upsert_source_item, validate_choice
+from ..knowledge_core.source_items import validate_choice
+from ..memory_core.decisions import record_memory_decision, record_provenance_event
+from ..memory_core.protocol import DEFAULT_PROPOSAL_TARGET_STORES, MEMORY_TARGET_STORES
+from ..memory_core.router import create_default_memory_router
 from ..models import MemoryProposal, utc_now
-from ..wiki.pages import upsert_knowledge_page
 
 
 MEMORY_PROPOSAL_TYPES = {
@@ -41,87 +42,106 @@ def create_memory_proposal(
     proposal_type: str,
     title: str,
     body: str,
+    target_store: str | None = None,
+    structured_payload: dict | None = None,
+    scope: str = "workspace",
+    confidence: float | None = None,
+    review_note: str = "",
     evidence_refs: list[str] | None = None,
     task_session_id: str | None = None,
     status: str = "pending",
 ) -> MemoryProposal:
     validate_choice(proposal_type, MEMORY_PROPOSAL_TYPES, "memoryProposalType")
     validate_choice(status, MEMORY_PROPOSAL_STATUSES, "memoryProposalStatus")
+    resolved_target_store = target_store or DEFAULT_PROPOSAL_TARGET_STORES[proposal_type]
+    validate_choice(resolved_target_store, MEMORY_TARGET_STORES, "memoryTargetStore")
     clean_title = title.strip()
     if not clean_title:
         raise ValueError("MemoryProposal title 不能为空")
+    clean_evidence_refs = [ref for ref in dict.fromkeys(evidence_refs or []) if ref]
 
     proposal = MemoryProposal(
         id=str(uuid4()),
         task_session_id=task_session_id,
+        target_store=resolved_target_store,
         type=proposal_type,
         title=clean_title,
         body=body.strip(),
-        evidence_refs=[ref for ref in dict.fromkeys(evidence_refs or []) if ref],
+        structured_payload_json=structured_payload or {},
+        scope=scope.strip() or "workspace",
+        evidence_refs=clean_evidence_refs,
+        confidence=confidence,
+        review_note=review_note.strip(),
         status=status,
     )
+    session.add(proposal)
+    session.flush()
+    decision = record_memory_decision(
+        session,
+        decision_type="proposal_created",
+        target_ref=f"proposal:{proposal.id}",
+        reason=f"Created proposal for {resolved_target_store}",
+        evidence_refs=clean_evidence_refs,
+        confidence=confidence,
+        scope=proposal.scope,
+        metadata={"proposalType": proposal.type, "targetStore": resolved_target_store},
+        actor="system",
+        policy="proposal_review_required",
+    )
+    proposal.decision_ref = f"decision:{decision.id}"
+    record_provenance_event(
+        session,
+        event_type="proposal_created",
+        from_ref=None,
+        to_ref=f"proposal:{proposal.id}",
+        reason=f"Created proposal for {resolved_target_store}",
+        evidence_refs=clean_evidence_refs,
+        payload={"decisionRef": proposal.decision_ref, "proposalType": proposal.type, "targetStore": resolved_target_store},
+    )
+    if task_session_id:
+        record_provenance_event(
+            session,
+            event_type="proposal_for_task",
+            from_ref=f"proposal:{proposal.id}",
+            to_ref=f"task:{task_session_id}",
+            reason="Proposal created from task context",
+            evidence_refs=clean_evidence_refs,
+            payload={"decisionRef": proposal.decision_ref, "targetStore": resolved_target_store},
+        )
     session.add(proposal)
     session.flush()
     return proposal
 
 
 def accept_memory_proposal(session: Session, proposal: MemoryProposal) -> MemoryProposal:
-    if proposal.status == "accepted":
-        return proposal
-    if proposal.status != "pending":
-        raise ValueError("只有 pending 的记忆候选可以接受")
-
-    if proposal.type == "page_update":
-        page = upsert_knowledge_page(
-            session,
-            title=proposal.title,
-            summary=proposal.body,
-            body="",
-            keywords=[proposal.type],
-            status="draft",
-        )
-        proposal.page_id = page.id
-    else:
-        source_item = upsert_source_item(
-            session,
-            source="just_ctrl_v",
-            external_id=f"memory-proposal:{proposal.id}",
-            kind="agent_selection",
-            title=proposal.title,
-            content_text=proposal.body,
-            metadata={
-                "proposalType": proposal.type,
-                "taskSessionId": proposal.task_session_id,
-                "evidenceRefs": proposal.evidence_refs,
-            },
-            status="active",
-        )
-        knowledge_item = commit_knowledge_item(
-            session,
-            source_item=source_item,
-            knowledge_type="fragment",
-            title=proposal.title,
-            summary=proposal.body[:160],
-            content=proposal.body,
-            keywords=[proposal.type],
-            source_ref=f"proposal:{proposal.id}",
-            status="active",
-        )
-        proposal.source_item_id = source_item.id
-        proposal.knowledge_item_id = knowledge_item.id
-
-    proposal.status = "accepted"
-    proposal.resolved_at = utc_now()
-    session.add(proposal)
-    session.flush()
-    return proposal
+    return create_default_memory_router().accept_proposal(session, proposal)
 
 
 def dismiss_memory_proposal(session: Session, proposal: MemoryProposal) -> MemoryProposal:
     if proposal.status != "pending":
         raise ValueError("只有 pending 的记忆候选可以忽略")
+    decision = record_memory_decision(
+        session,
+        decision_type="proposal_dismissed",
+        target_ref=f"proposal:{proposal.id}",
+        reason=proposal.review_note or "Dismissed by review gate",
+        evidence_refs=proposal.evidence_refs or [],
+        confidence=proposal.confidence,
+        scope=proposal.scope,
+        metadata={"proposalType": proposal.type, "targetStore": proposal.target_store},
+    )
+    proposal.decision_ref = f"decision:{decision.id}"
     proposal.status = "dismissed"
     proposal.resolved_at = utc_now()
     session.add(proposal)
+    record_provenance_event(
+        session,
+        event_type="proposal_dismissed",
+        from_ref=f"proposal:{proposal.id}",
+        to_ref=proposal.decision_ref,
+        reason=proposal.review_note or "Dismissed by review gate",
+        evidence_refs=proposal.evidence_refs or [],
+        payload={"targetStore": proposal.target_store},
+    )
     session.flush()
     return proposal

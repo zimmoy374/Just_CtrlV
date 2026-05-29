@@ -10,7 +10,7 @@ export type KnowledgeItem = {
   keywords: string[]
   source: "just_ctrl_v" | "external_ai"
   sourceRef: string
-  knowledgeType: "fragment"
+  knowledgeType: "fragment" | "rule_preference" | "procedure_lesson"
   status: "active" | "merged" | "archived"
   createdAt: string
   updatedAt: string

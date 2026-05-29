@@ -9,7 +9,7 @@ from ..models import KnowledgeItem, SourceItem, utc_now
 from .source_items import validate_choice
 
 
-KNOWLEDGE_TYPES = {"fragment"}
+KNOWLEDGE_TYPES = {"fragment", "rule_preference", "procedure_lesson"}
 KNOWLEDGE_ITEM_STATUSES = {"active", "merged", "archived"}
 
 

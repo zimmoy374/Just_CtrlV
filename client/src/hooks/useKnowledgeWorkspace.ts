@@ -8,7 +8,7 @@ import type { KnowledgeGraphResponse, KnowledgePageSummary } from "../types/know
 import type { Reflection } from "../types/organization"
 import type { KnowledgeSearchResult } from "../types/retrieval"
 
-export type AppView = "board" | "search" | "knowledge"
+export type AppView = "board" | "search" | "knowledge" | "tasks"
 
 type WorkspaceNotifications = {
   setError: (value: string | null) => void
