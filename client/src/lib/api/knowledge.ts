@@ -1,13 +1,5 @@
-import type { ConfirmedKnowledgeImport, ConfirmedKnowledgeImportResponse, KnowledgeGraphResponse, KnowledgePageSummary } from "../../types/knowledge"
+import type { ConfirmedKnowledgeImport, ConfirmedKnowledgeImportResponse } from "../../types/knowledge"
 import { API_BASE, parseResponse } from "./client"
-
-export async function getKnowledgeGraph() {
-  return parseResponse<KnowledgeGraphResponse>(await fetch(`${API_BASE}/api/graph`))
-}
-
-export async function listKnowledgePages() {
-  return parseResponse<KnowledgePageSummary[]>(await fetch(`${API_BASE}/api/knowledge/pages`))
-}
 
 export async function importConfirmedKnowledge(payload: ConfirmedKnowledgeImport) {
   return parseResponse<ConfirmedKnowledgeImportResponse>(

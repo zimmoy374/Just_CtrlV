@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from ..knowledge_core.source_items import upsert_source_item, validate_choice
 from ..models import TaskEvent, TaskSession, utc_now
+from .safety import sanitize_task_payload, sanitize_task_text
 
 
 TASK_EVENT_TYPES = {
@@ -23,6 +24,7 @@ TASK_EVENT_TYPES = {
     "close_suggested",
     "task_closed",
     "memory_candidate",
+    "task_status_changed",
 }
 
 
@@ -41,20 +43,21 @@ def append_task_event(
     event_type: str,
     summary: str,
     payload: dict | None = None,
-    source: str = "just_ctrl_v",
+    source: str = "second_brain",
     source_ref: str = "",
 ) -> TaskEvent:
     validate_choice(event_type, TASK_EVENT_TYPES, "taskEventType")
-    clean_summary = summary.strip()
+    clean_summary = sanitize_task_text(summary)
     if not clean_summary:
         raise ValueError("TaskEvent summary 不能为空")
+    clean_payload = sanitize_task_payload(payload or {})
 
     event = TaskEvent(
         id=str(uuid4()),
         task_session_id=task.id,
         type=event_type,
         summary=clean_summary,
-        payload_json=payload or {},
+        payload_json=clean_payload,
         source=source,
         source_ref=source_ref,
     )
@@ -65,7 +68,7 @@ def append_task_event(
     session.flush()
     upsert_source_item(
         session,
-        source="just_ctrl_v",
+        source="second_brain",
         external_id=f"task-event:{event.id}",
         kind="task_event",
         title=f"{task.title} / {event.type}",

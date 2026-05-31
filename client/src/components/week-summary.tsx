@@ -67,7 +67,7 @@ export function WeekSummary({ cards, weekTitle, onSearchKeyword }: WeekSummaryPr
         <section className="week-summary-panel" aria-label="周总结">
           <div className="summary-panel-head">
             <div>
-              <span>Weekly Summary</span>
+              <span>周总结</span>
               <h2>{weekTitle}</h2>
             </div>
             <Button type="button" variant="ghost" size="icon" title="关闭周总结" onClick={() => setIsOpen(false)}>
@@ -77,23 +77,23 @@ export function WeekSummary({ cards, weekTitle, onSearchKeyword }: WeekSummaryPr
 
           <div className="summary-stats">
             <div>
-              <span># Total Items</span>
+              <span>本周条目</span>
               <strong>{stats.itemCount}</strong>
             </div>
             <div>
-              <span>Terms Found</span>
+              <span>关键词数</span>
               <strong>{stats.keywordCount}</strong>
             </div>
           </div>
 
           <div className="summary-terms">
-            <span className="summary-label">Top Terms This Week</span>
+            <span className="summary-label">本周高频关键词</span>
             {stats.topKeywords.length > 0 ? (
               stats.topKeywords.map((item, index) => (
                 <button type="button" key={item.keyword} onClick={() => onSearchKeyword(item.keyword)}>
                   <em>{index + 1}</em>
                   <span>{item.keyword}</span>
-                  <strong>{item.count}x</strong>
+                  <strong>{item.count} 次</strong>
                 </button>
               ))
             ) : (

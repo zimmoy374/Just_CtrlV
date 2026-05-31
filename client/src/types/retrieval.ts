@@ -8,7 +8,7 @@ export type KnowledgeItem = {
   summary: string
   content: string
   keywords: string[]
-  source: "just_ctrl_v" | "external_ai"
+  source: "second_brain" | "external_ai"
   sourceRef: string
   knowledgeType: "fragment" | "rule_preference" | "procedure_lesson"
   status: "active" | "merged" | "archived"

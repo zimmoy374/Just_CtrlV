@@ -37,6 +37,7 @@ from ..tasks.sessions import (
     pause_task_session,
 )
 from ..tasks.state import get_or_create_task_state, update_task_state
+from ..tasks.state_machine import ensure_task_mutable
 
 
 router = APIRouter()
@@ -78,7 +79,8 @@ def patch_task_state_api(
     payload: TaskStatePatch,
     session: Session = Depends(get_session),
 ) -> TaskStateResponse:
-    _require_task(session, task_id)
+    task = _require_task(session, task_id)
+    _ensure_task_mutable(task)
     state = update_task_state(
         session,
         task_id,
@@ -105,6 +107,7 @@ def append_task_event_api(
     session: Session = Depends(get_session),
 ) -> TaskEventResponse:
     task = _require_task(session, task_id)
+    _ensure_task_mutable(task)
     try:
         event = append_task_event(
             session,
@@ -129,6 +132,7 @@ def create_task_checkpoint_api(
     session: Session = Depends(get_session),
 ) -> TaskCheckpointResponse:
     task = _require_task(session, task_id)
+    _ensure_task_mutable(task)
     try:
         checkpoint = create_task_checkpoint(session, task, title=payload.title, summary=payload.summary)
     except ValueError as exc:
@@ -215,7 +219,10 @@ def close_task_api(task_id: str, session: Session = Depends(get_session)) -> Tas
 @router.post("/api/tasks/{task_id}/archive", response_model=TaskDetailResponse)
 def archive_task_api(task_id: str, session: Session = Depends(get_session)) -> TaskDetailResponse:
     task = _require_task(session, task_id)
-    archive_task_session(session, task)
+    try:
+        archive_task_session(session, task)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
     task = _require_task(session, task_id)
     return _task_detail(session, task)
@@ -226,6 +233,13 @@ def _require_task(session: Session, task_id: str) -> TaskSession:
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+def _ensure_task_mutable(task: TaskSession) -> None:
+    try:
+        ensure_task_mutable(task)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _task_detail(session: Session, task: TaskSession) -> TaskDetailResponse:

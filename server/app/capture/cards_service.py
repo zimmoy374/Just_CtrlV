@@ -57,7 +57,7 @@ def sync_card_source_item(session: Session, card: Card) -> SourceItem:
     payload = _card_payload(card)
     return upsert_source_item(
         session,
-        source="just_ctrl_v",
+        source="second_brain",
         external_id=card.id,
         kind=payload.kind,
         title=payload.title,

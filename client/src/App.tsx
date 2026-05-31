@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, ClipboardList, Home, Network, Search, Sparkles } from "lucide-react"
+import { ChevronLeft, ChevronRight, Home, Search, ShieldCheck, Sparkles } from "lucide-react"
 
 import { ImagePreviewOverlay } from "./components/image-preview-overlay"
 import { SuggestionsPanel } from "./components/suggestions-panel"
@@ -7,11 +7,10 @@ import { Button } from "./components/ui/button"
 import { WeekSummary } from "./components/week-summary"
 import { useBoardController } from "./hooks/useBoardController"
 import { useKnowledgeWorkspace } from "./hooks/useKnowledgeWorkspace"
-import { useTaskWorkspace } from "./hooks/useTaskWorkspace"
+import { useReviewWorkbench } from "./hooks/useReviewWorkbench"
 import { BoardPage } from "./pages/BoardPage"
-import { KnowledgeMapPage } from "./pages/KnowledgeMapPage"
+import { ReviewWorkbenchPage } from "./pages/ReviewWorkbenchPage"
 import { SearchPage } from "./pages/SearchPage"
-import { TaskWorkbenchPage } from "./pages/TaskWorkbenchPage"
 import type { KnowledgeSearchResult } from "./types/retrieval"
 
 function App() {
@@ -19,7 +18,7 @@ function App() {
   const [toast, setToast] = useState<string | null>(null)
 
   const knowledge = useKnowledgeWorkspace({ setError, setToast })
-  const tasks = useTaskWorkspace({ setError, setToast })
+  const review = useReviewWorkbench({ setError, setToast })
   const board = useBoardController({
     view: knowledge.view,
     setView: knowledge.setView,
@@ -92,20 +91,15 @@ function App() {
           </button>
           <button
             type="button"
-            className={`topbar-tool${knowledge.view === "knowledge" ? " is-active" : ""}`}
-            title="知识地图"
-            onClick={() => void knowledge.openGraph()}
+            className={`topbar-tool${knowledge.view === "review" ? " is-active" : ""}`}
+            title="记忆审查台"
+            onClick={() => {
+              knowledge.setView("review")
+              void review.refreshWorkbench()
+            }}
           >
-            <Network size={18} />
-          </button>
-          <button
-            type="button"
-            className={`topbar-tool${knowledge.view === "tasks" ? " is-active" : ""}`}
-            title="任务工作台"
-            onClick={() => knowledge.setView("tasks")}
-          >
-            <ClipboardList size={18} />
-            {tasks.activeTasks.length > 0 ? <span className="tool-count">{tasks.activeTasks.length}</span> : null}
+            <ShieldCheck size={18} />
+            {review.workbench?.counts.pendingProposals ? <span className="tool-count">{review.workbench.counts.pendingProposals}</span> : null}
           </button>
           <button type="button" className="topbar-tool" title="回到本周" onClick={board.goToday}>
             <Home size={18} />
@@ -145,35 +139,25 @@ function App() {
             results={knowledge.searchResults}
             isLoading={knowledge.isSearchLoading}
             onOpenCard={handleOpenSearchResult}
-          />
-        ) : null}
-
-        {knowledge.view === "knowledge" ? (
-          <KnowledgeMapPage
-            graph={knowledge.graphData}
-            pages={knowledge.knowledgePages}
-            isLoading={knowledge.isGraphLoading}
-            onOpenCard={board.openCardWeek}
             onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)}
           />
         ) : null}
 
-        {knowledge.view === "tasks" ? (
-          <TaskWorkbenchPage
-            activeTasks={tasks.activeTasks}
-            selectedTaskId={tasks.selectedTaskId}
-            detail={tasks.taskDetail}
-            handoff={tasks.handoff}
-            memoryProposals={tasks.memoryProposals}
-            isTaskLoading={tasks.isTaskLoading}
-            isInboxLoading={tasks.isInboxLoading}
-            isHandoffCopying={tasks.isHandoffCopying}
-            onSelectTask={tasks.setSelectedTaskId}
-            onCopyHandoff={tasks.copyHandoff}
-            onFinishTask={tasks.finishSelectedTask}
-            onArchiveTask={tasks.archiveSelectedTask}
-            onAcceptProposal={tasks.acceptProposal}
-            onDismissProposal={tasks.dismissProposal}
+        {knowledge.view === "review" ? (
+          <ReviewWorkbenchPage
+            workbench={review.workbench}
+            isLoading={review.isReviewLoading}
+            exportPath={review.exportPath}
+            onRefresh={() => void review.refreshWorkbench()}
+            onExport={() => void review.exportBundle()}
+            onSaveProposal={(id, payload) => void review.saveProposal(id, payload)}
+            onAcceptProposal={(id) => void review.acceptProposal(id)}
+            onDismissProposal={(id) => void review.dismissProposal(id)}
+            onSupersedeFact={(id, objectValue, evidenceRefs, reviewNote) => void review.supersedeFact(id, objectValue, evidenceRefs, reviewNote)}
+            onInvalidateFact={(id, reason) => void review.invalidateFact(id, reason)}
+            onResolveConflict={(id, resolution, winningFactId) => void review.resolveConflict(id, resolution, winningFactId)}
+            onSaveSourcePolicy={(id, visibility, privacyLabels) => void review.saveSourcePolicy(id, visibility, privacyLabels)}
+            onPurgeSource={(id, reason) => void review.purgeSource(id, reason)}
           />
         ) : null}
 

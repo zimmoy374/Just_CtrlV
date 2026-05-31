@@ -60,7 +60,7 @@ export function BoardCard({
       <div className="card-inner">
         <div className="card-actions">
           {card.aiStatus === "failed" ? (
-            <Button type="button" variant="ghost" size="icon" title="重试 AI" onClick={() => onRetry(card)}>
+            <Button type="button" variant="ghost" size="icon" title="重试智能整理" onClick={() => onRetry(card)}>
               <RefreshCw size={15} />
             </Button>
           ) : null}

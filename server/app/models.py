@@ -73,7 +73,7 @@ class TaskEvent(SQLModel, table=True):
     type: str = Field(index=True)
     summary: str = Field(default="", sa_column=Column(Text, nullable=False))
     payload_json: dict = Field(default_factory=dict, sa_column=Column("payload", JSON, nullable=False))
-    source: str = Field(default="just_ctrl_v", index=True)
+    source: str = Field(default="second_brain", index=True)
     source_ref: str = ""
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -106,6 +106,23 @@ class TaskCheckpoint(SQLModel, table=True):
     event_from_id: Optional[str] = None
     event_to_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class TaskDigest(SQLModel, table=True):
+    __tablename__ = "task_digests"
+
+    task_session_id: str = Field(primary_key=True)
+    summary: str = Field(default="", sa_column=Column(Text, nullable=False))
+    done_json: list[str] = Field(default_factory=list, sa_column=Column("done", JSON, nullable=False))
+    decisions_json: list[str] = Field(default_factory=list, sa_column=Column("decisions", JSON, nullable=False))
+    open_questions_json: list[str] = Field(default_factory=list, sa_column=Column("open_questions", JSON, nullable=False))
+    risks_json: list[str] = Field(default_factory=list, sa_column=Column("risks", JSON, nullable=False))
+    files_touched_json: list[str] = Field(default_factory=list, sa_column=Column("files_touched", JSON, nullable=False))
+    source_refs_json: list[str] = Field(default_factory=list, sa_column=Column("source_refs", JSON, nullable=False))
+    event_from_id: Optional[str] = None
+    event_to_id: Optional[str] = None
+    event_count: int = 0
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class HandoffPack(SQLModel, table=True):
@@ -170,6 +187,75 @@ class ProvenanceEvent(SQLModel, table=True):
     evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     payload_json: dict = Field(default_factory=dict, sa_column=Column("payload", JSON, nullable=False))
     occurred_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class Entity(SQLModel, table=True):
+    __tablename__ = "entities"
+
+    id: str = Field(primary_key=True)
+    type: str = Field(index=True)
+    name: str = Field(index=True)
+    aliases: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    source_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class MemoryFact(SQLModel, table=True):
+    __tablename__ = "memory_facts"
+
+    id: str = Field(primary_key=True)
+    subject_entity_id: str = Field(index=True)
+    predicate: str = Field(index=True)
+    object_value: str = Field(default="", sa_column=Column(Text, nullable=False))
+    object_entity_id: Optional[str] = Field(default=None, index=True)
+    confidence: Optional[float] = None
+    valid_at: datetime = Field(default_factory=utc_now, index=True)
+    invalid_at: Optional[datetime] = Field(default=None, index=True)
+    superseded_by: Optional[str] = Field(default=None, index=True)
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="active", index=True)
+    scope: str = Field(default="workspace", index=True)
+    source_proposal_id: Optional[str] = Field(default=None, index=True)
+    decision_ref: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class MemoryRelation(SQLModel, table=True):
+    __tablename__ = "memory_relations"
+
+    id: str = Field(primary_key=True)
+    from_entity_id: str = Field(index=True)
+    relation_type: str = Field(index=True)
+    to_entity_id: str = Field(index=True)
+    confidence: Optional[float] = None
+    valid_at: datetime = Field(default_factory=utc_now, index=True)
+    invalid_at: Optional[datetime] = Field(default=None, index=True)
+    superseded_by: Optional[str] = Field(default=None, index=True)
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="active", index=True)
+    scope: str = Field(default="workspace", index=True)
+    source_proposal_id: Optional[str] = Field(default=None, index=True)
+    decision_ref: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class MemoryConflict(SQLModel, table=True):
+    __tablename__ = "memory_conflicts"
+
+    id: str = Field(primary_key=True)
+    conflict_type: str = Field(default="fact_conflict", index=True)
+    fact_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    relation_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    reason: str = Field(default="", sa_column=Column(Text, nullable=False))
+    status: str = Field(default="open", index=True)
+    resolution: str = Field(default="", sa_column=Column(Text, nullable=False))
+    scope: str = Field(default="workspace", index=True)
+    decision_ref: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: Optional[datetime] = None
 
 
 class SourceItem(SQLModel, table=True):

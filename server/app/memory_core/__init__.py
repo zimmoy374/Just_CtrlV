@@ -1,4 +1,4 @@
-"""Stable protocol layer for the Memory Fabric."""
+"""Stable memory protocol layer for second brain."""
 
 from .composer import MemoryContextComposer
 from .protocol import (
@@ -10,7 +10,7 @@ from .protocol import (
     ProvenanceEvent,
 )
 from .router import MemoryRouter, create_default_memory_router
-from .stores import SemanticKnowledgeStore, TaskMemoryStore
+from .stores import ProfileTemporalGraphStore, SemanticKnowledgeStore, TaskMemoryStore
 
 __all__ = [
     "MemoryContextComposer",
@@ -21,6 +21,7 @@ __all__ = [
     "MemoryRouter",
     "MemorySlice",
     "ProvenanceEvent",
+    "ProfileTemporalGraphStore",
     "SemanticKnowledgeStore",
     "TaskMemoryStore",
     "create_default_memory_router",

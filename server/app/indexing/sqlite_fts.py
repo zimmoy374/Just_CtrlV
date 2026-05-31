@@ -3,11 +3,21 @@ from __future__ import annotations
 import re
 
 from sqlalchemy import Engine, text
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ..models import KnowledgeItem
 
 INDEXABLE_KNOWLEDGE_STATUSES = {"active"}
+KNOWLEDGE_SEARCH_INDEX_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_search_fts USING fts5(
+    knowledge_item_id UNINDEXED,
+    title,
+    summary,
+    content,
+    keywords_text,
+    tokenize='trigram'
+)
+"""
 
 
 def _fts_query(value: str) -> str:
@@ -40,20 +50,7 @@ class SqliteFtsIndex:
 
 def init_knowledge_search_index(engine: Engine) -> None:
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_search_fts USING fts5(
-                    knowledge_item_id UNINDEXED,
-                    title,
-                    summary,
-                    content,
-                    keywords_text,
-                    tokenize='trigram'
-                )
-                """,
-            ),
-        )
+        connection.execute(text(KNOWLEDGE_SEARCH_INDEX_DDL))
 
 
 def refresh_knowledge_search_index(session: Session, knowledge_item: KnowledgeItem) -> None:
@@ -79,3 +76,26 @@ def refresh_knowledge_search_index(session: Session, knowledge_item: KnowledgeIt
             "keywords_text": " ".join(knowledge_item.keywords or []),
         },
     )
+
+
+def rebuild_knowledge_search_index(session: Session) -> dict:
+    connection = session.connection()
+    connection.execute(text("DROP TABLE IF EXISTS knowledge_search_fts"))
+    connection.execute(text(KNOWLEDGE_SEARCH_INDEX_DDL))
+    knowledge_items = session.exec(select(KnowledgeItem)).all()
+    indexed_count = 0
+    skipped_count = 0
+    for knowledge_item in knowledge_items:
+        refresh_knowledge_search_index(session, knowledge_item)
+        if knowledge_item.status in INDEXABLE_KNOWLEDGE_STATUSES:
+            indexed_count += 1
+        else:
+            skipped_count += 1
+    session.flush()
+    return {
+        "projection": "knowledge_search_fts",
+        "status": "rebuilt",
+        "indexedCount": indexed_count,
+        "skippedCount": skipped_count,
+        "sourceStore": "knowledge_items",
+    }

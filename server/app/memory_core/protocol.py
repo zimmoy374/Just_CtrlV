@@ -8,11 +8,16 @@ from sqlmodel import Session
 
 
 CURRENT_MEMORY_REF_KINDS = {
+    "entity",
+    "fact",
+    "relation",
+    "conflict",
     "source",
     "item",
     "page",
     "store",
     "task",
+    "task-digest",
     "task-event",
     "checkpoint",
     "handoff",
@@ -20,10 +25,6 @@ CURRENT_MEMORY_REF_KINDS = {
 }
 
 FUTURE_MEMORY_REF_KINDS = {
-    "entity",
-    "fact",
-    "relation",
-    "conflict",
     "decision",
     "provenance",
     "rule",
@@ -34,6 +35,7 @@ MEMORY_REF_KINDS = CURRENT_MEMORY_REF_KINDS | FUTURE_MEMORY_REF_KINDS
 
 MEMORY_TARGET_STORES = {
     "semantic_knowledge",
+    "profile_temporal_graph",
     "rule_preference",
     "procedure_lesson",
 }
@@ -47,6 +49,9 @@ DEFAULT_PROPOSAL_TARGET_STORES = {
     "lesson": "procedure_lesson",
     "pitfall": "procedure_lesson",
     "workflow_pattern": "procedure_lesson",
+    "profile_fact": "profile_temporal_graph",
+    "entity_relation": "profile_temporal_graph",
+    "fact_supersession": "profile_temporal_graph",
 }
 
 
@@ -87,11 +92,25 @@ class MemoryQuery:
     scope: str | None = None
     task_session_id: str | None = None
     limit: int = 20
+    visibility: str = "workspace"
+    capabilities: tuple[str, ...] = ()
+    max_chars: int = 4000
+    max_pages: int = 3
+    max_items: int = 6
+    max_source_excerpts: int = 3
+    max_task_slices: int = 4
+    max_rules: int = 4
+    max_profile_facts: int = 5
+    max_procedure_lessons: int = 3
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def trimmed_text(self) -> str:
         return self.text.strip()
+
+    @property
+    def capability_set(self) -> set[str]:
+        return set(self.capabilities or ())
 
 
 @dataclass(frozen=True, slots=True)

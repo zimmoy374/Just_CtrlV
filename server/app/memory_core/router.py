@@ -10,8 +10,9 @@ from ..knowledge_core.source_items import upsert_source_item, validate_choice
 from ..models import MemoryProposal, utc_now
 from ..wiki.pages import upsert_knowledge_page
 from .decisions import record_memory_decision, record_provenance_event
+from .profile_graph import accept_profile_graph_proposal, validate_profile_graph_proposal
 from .protocol import DEFAULT_PROPOSAL_TARGET_STORES, MEMORY_TARGET_STORES, MemoryQuery, MemorySlice, MemoryStore
-from .stores import SemanticKnowledgeStore, TaskMemoryStore
+from .stores import ProfileTemporalGraphStore, SemanticKnowledgeStore, TaskMemoryStore
 
 
 class MemoryRouter:
@@ -39,6 +40,15 @@ class MemoryRouter:
             slices.extend(store.retrieve(session, query))
         return sorted(slices, key=lambda item: item.score, reverse=True)
 
+    def rebuild_projections(
+        self,
+        session: Session,
+        *,
+        store_names: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        stores = [self._stores[name] for name in store_names or self._stores.keys() if name in self._stores]
+        return [dict(store.rebuild_projection(session)) for store in stores]
+
     def accept_proposal(self, session: Session, proposal: MemoryProposal) -> MemoryProposal:
         if proposal.status != "pending":
             raise ValueError("只有 pending 的记忆候选可以接受")
@@ -47,7 +57,9 @@ class MemoryRouter:
         validate_choice(target_store, MEMORY_TARGET_STORES, "memoryTargetStore")
         if not proposal.title.strip():
             raise ValueError("MemoryProposal title 不能为空")
-        if proposal.type != "page_update" and not proposal.body.strip():
+        if target_store == "profile_temporal_graph":
+            validate_profile_graph_proposal(session, proposal)
+        if target_store != "profile_temporal_graph" and proposal.type != "page_update" and not proposal.body.strip():
             raise ValueError("MemoryProposal body 不能为空")
 
         routed_decision = record_memory_decision(
@@ -70,6 +82,17 @@ class MemoryRouter:
             payload={"decisionRef": f"decision:{routed_decision.id}", "targetStore": target_store},
         )
 
+        if target_store == "profile_temporal_graph":
+            accepted = accept_profile_graph_proposal(
+                session,
+                proposal,
+                target_store=target_store,
+                routed_decision=routed_decision,
+            )
+            session.add(accepted)
+            session.flush()
+            return accepted
+
         if target_store == "semantic_knowledge" and proposal.type == "page_update":
             page = upsert_knowledge_page(
                 session,
@@ -85,7 +108,7 @@ class MemoryRouter:
         else:
             source_item = upsert_source_item(
                 session,
-                source="just_ctrl_v",
+                source="second_brain",
                 external_id=f"memory-proposal:{proposal.id}",
                 kind="agent_selection",
                 title=proposal.title,
@@ -158,6 +181,7 @@ def create_default_memory_router() -> MemoryRouter:
     return MemoryRouter(
         [
             SemanticKnowledgeStore(),
+            ProfileTemporalGraphStore(),
             TaskMemoryStore(),
         ],
     )

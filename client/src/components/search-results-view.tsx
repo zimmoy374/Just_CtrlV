@@ -15,7 +15,7 @@ export function SearchResultsView({ query, results, isLoading, onOpenCard }: Sea
     <section className="search-view" aria-label="搜索结果">
       <div className="view-heading">
         <div>
-          <span className="view-kicker">Search Board</span>
+          <span className="view-kicker">搜索结果</span>
           <h1>{query ? `“${query}”` : "搜索知识"}</h1>
         </div>
         <strong>{isLoading ? "搜索中" : `${results.length} 条结果`}</strong>

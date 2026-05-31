@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-os.environ["JUST_CTRL_V_DATA_DIR"] = tempfile.mkdtemp(prefix="just-ctrl-v-test-")
+os.environ["SECOND_BRAIN_DATA_DIR"] = tempfile.mkdtemp(prefix="second-brain-test-")
 os.environ["OPENAI_API_KEY"] = ""
 
 from fastapi.testclient import TestClient
@@ -77,48 +77,6 @@ def test_image_card_upload_and_delete_without_api_key() -> None:
         deleted = client.delete(f"/api/cards/{card['id']}")
         assert deleted.status_code == 204
         assert client.get("/api/weeks/2026-W22/cards").json() == []
-
-
-def test_knowledge_graph_uses_formal_knowledge_items(monkeypatch) -> None:
-    from server.app import ai
-
-    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(ai.settings, "openai_base_url", "https://example.test/v1")
-    monkeypatch.setattr(ai.settings, "openai_model", "test-model")
-
-    def fake_analyze(card):
-        if "孤立" in (card.text_content or ""):
-            return {"summary": "孤立知识", "keywords": ["孤立主题"]}
-        return {"summary": f"共享知识 {card.text_content}", "keywords": ["共享主题", card.text_content[:2]]}
-
-    monkeypatch.setattr(ai, "_analyze_with_provider", fake_analyze)
-
-    with TestClient(app) as client:
-        first = client.post(
-            "/api/cards/text",
-            json={"weekKey": "2026-W31", "textContent": "第一张有关联的卡片", "x": 10, "y": 20},
-        ).json()
-        second = client.post(
-            "/api/cards/text",
-            json={"weekKey": "2026-W32", "textContent": "第二张有关联的卡片", "x": 20, "y": 30},
-        ).json()
-        isolated = client.post(
-            "/api/cards/text",
-            json={"weekKey": "2026-W33", "textContent": "孤立卡片", "x": 30, "y": 40},
-        ).json()
-
-        response = client.get("/api/graph")
-        assert response.status_code == 200
-        graph = response.json()
-        node_ids = {node["id"] for node in graph["nodes"]}
-        item_nodes = [node for node in graph["nodes"] if node["type"] == "item"]
-        card_ids_in_graph = {node["knowledgeItem"]["cardId"] for node in item_nodes}
-
-        assert "keyword:共享主题" in node_ids
-        assert first["id"] in card_ids_in_graph
-        assert second["id"] in card_ids_in_graph
-        assert isolated["id"] not in card_ids_in_graph
-        assert len(graph["edges"]) >= 2
 
 
 def test_knowledge_search_indexes_successfully_analyzed_card(monkeypatch) -> None:
@@ -468,7 +426,7 @@ def test_context_pack_returns_budgeted_related_content_not_full_library(monkeypa
     assert all("灯塔协议" in item["summary"] or "灯塔协议" in item["excerpt"] for item in pack["relatedItems"])
     assert all("无关" not in item["summary"] for item in pack["relatedItems"])
     assert pack["citationRefs"]
-    assert any("not as a chat endpoint" in line for line in pack["protocolReminder"])
+    assert any("不要当成聊天接口" in line for line in pack["protocolReminder"])
 
 
 def test_confirmed_external_ai_import_creates_formal_knowledge_and_page_suggestion() -> None:
@@ -532,7 +490,7 @@ def test_confirmed_external_ai_import_trims_external_id_and_keeps_original_text_
                 "title": "外部导入正文回退",
                 "keywords": ["正文回退"],
                 "selectedOriginalText": "这段原文应在没有 summary/body 时成为正式知识内容。",
-                "externalId": "  external-fallback-1  ",
+                "externalId": "  external-original-text-1  ",
             },
         )
         assert response.status_code == 200
@@ -545,12 +503,12 @@ def test_confirmed_external_ai_import_trims_external_id_and_keeps_original_text_
         source_item = session.exec(select(SourceItem).where(SourceItem.id == payload["sourceItemId"])).one()
         knowledge_item = session.exec(select(KnowledgeItem).where(KnowledgeItem.id == payload["knowledgeItem"]["id"])).one()
 
-    assert source_item.external_id == "external-fallback-1"
+    assert source_item.external_id == "external-original-text-1"
     assert knowledge_item.content == source_item.content_text
 
 
 def test_memory_proposal_pending_is_listed_but_not_searchable() -> None:
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from server.app.database import engine
     from server.app.memory_kernel.proposals import create_memory_proposal
@@ -568,9 +526,9 @@ def test_memory_proposal_pending_is_listed_but_not_searchable() -> None:
         proposal_id = proposal.id
 
     with TestClient(app) as client:
-        listed = client.get("/api/memory-proposals", params={"status": "pending"})
+        listed = client.get("/api/review/workbench", params={"proposalStatus": "pending"})
         assert listed.status_code == 200
-        assert any(item["id"] == proposal_id and item["status"] == "pending" for item in listed.json())
+        assert any(item["id"] == proposal_id and item["status"] == "pending" for item in listed.json()["proposals"])
 
         search = client.get("/api/knowledge/search", params={"q": marker})
         assert search.status_code == 200
@@ -597,7 +555,7 @@ def test_accept_memory_proposal_creates_searchable_active_knowledge_item() -> No
         proposal_id = proposal.id
 
     with TestClient(app) as client:
-        accepted = client.post(f"/api/memory-proposals/{proposal_id}/accept")
+        accepted = client.post(f"/api/review/proposals/{proposal_id}/accept")
         assert accepted.status_code == 200
         payload = accepted.json()
         assert payload["status"] == "accepted"
@@ -642,7 +600,7 @@ def test_dismiss_memory_proposal_is_not_searchable_or_exported(tmp_path) -> None
         proposal_id = proposal.id
 
     with TestClient(app) as client:
-        dismissed = client.post(f"/api/memory-proposals/{proposal_id}/dismiss")
+        dismissed = client.post(f"/api/review/proposals/{proposal_id}/dismiss")
         assert dismissed.status_code == 200
         payload = dismissed.json()
         assert payload["status"] == "dismissed"
@@ -746,12 +704,22 @@ def test_task_capsule_core_api_lifecycle() -> None:
         assert closed.status_code == 200
         assert closed.json()["task"]["status"] == "closed"
 
+        assert client.patch(f"/api/tasks/{task_id}/state", json={"nextSteps": ["不应写入"]}).status_code == 409
+        assert client.post(
+            f"/api/tasks/{task_id}/events",
+            json={"type": "agent_action", "summary": "不应追加"},
+        ).status_code == 409
+        assert client.post(
+            f"/api/tasks/{task_id}/checkpoints",
+            json={"title": "不应创建", "summary": "终态不可变"},
+        ).status_code == 409
+
         active_after_close = client.get("/api/tasks", params={"status": "active"}).json()
         assert all(task["id"] != task_id for task in active_after_close)
 
-        pending_proposals = client.get("/api/memory-proposals", params={"status": "pending"})
-        assert pending_proposals.status_code == 200
-        task_proposal = next(item for item in pending_proposals.json() if item["taskSessionId"] == task_id)
+        workbench = client.get("/api/review/workbench", params={"proposalStatus": "pending"})
+        assert workbench.status_code == 200
+        task_proposal = next(item for item in workbench.json()["proposals"] if item["taskSessionId"] == task_id)
         assert task_proposal["status"] == "pending"
         assert task_proposal["knowledgeItemId"] is None
         assert task_proposal["sourceItemId"] is None
@@ -845,7 +813,7 @@ def test_include_closed_allows_closed_task_handoff() -> None:
 def test_expired_task_handoff_contains_stale_warning() -> None:
     from datetime import timedelta
 
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from server.app.database import engine
     from server.app.models import TaskSession, utc_now
@@ -870,7 +838,7 @@ def test_expired_task_handoff_contains_stale_warning() -> None:
         assert response.status_code == 200
         payload = response.json()
         assert payload["pack"]["freshness"]["state"] == "expired"
-        assert payload["content"].startswith("> STALE WARNING:")
+        assert payload["content"].startswith("> 过期提醒：")
 
 
 def test_create_handoff_records_handoff_created_event() -> None:
@@ -1083,21 +1051,19 @@ def test_export_accepted_proposal_provenance_is_correct(tmp_path) -> None:
     assert proposal_payload["decisionRef"]
     assert any(item["decisionType"] == "proposal_accepted" and item["targetRef"] == f"proposal:{proposal_id}" for item in decisions)
     assert any(line["type"] == "proposal_routed" and line["from"] == f"proposal:{proposal_id}" for line in provenance)
-    assert {
-        "type": "proposal_for_task",
-        "from": f"proposal:{proposal_id}",
-        "to": f"task:{task['id']}",
-    } in provenance
-    assert {
-        "type": "proposal_created_source",
-        "from": f"proposal:{proposal_id}",
-        "to": f"source:{source_item_id}",
-    } in provenance
-    assert {
-        "type": "accepted_proposal_created_item",
-        "from": f"proposal:{proposal_id}",
-        "to": f"item:{knowledge_item_id}",
-    } in provenance
+    assert any(item["type"] == "proposal_for_task" and item["from"] == f"proposal:{proposal_id}" and item["to"] == f"task:{task['id']}" for item in provenance)
+    assert any(
+        item["type"] == "proposal_created_source"
+        and item["from"] == f"proposal:{proposal_id}"
+        and item["to"] == f"source:{source_item_id}"
+        for item in provenance
+    )
+    assert any(
+        item["type"] == "accepted_proposal_created_item"
+        and item["from"] == f"proposal:{proposal_id}"
+        and item["to"] == f"item:{knowledge_item_id}"
+        for item in provenance
+    )
 
 
 def test_export_accepted_page_update_proposal_provenance_is_correct(tmp_path) -> None:
@@ -1141,11 +1107,12 @@ def test_export_accepted_page_update_proposal_provenance_is_correct(tmp_path) ->
         for item in decisions
     )
     assert any(line["type"] == "accepted_proposal_created_page" and line["from"] == f"proposal:{proposal_id}" for line in provenance)
-    assert {
-        "type": "accepted_proposal_created_page",
-        "from": f"proposal:{proposal_id}",
-        "to": f"page:{page_id}",
-    } in provenance
+    assert any(
+        item["type"] == "accepted_proposal_created_page"
+        and item["from"] == f"proposal:{proposal_id}"
+        and item["to"] == f"page:{page_id}"
+        for item in provenance
+    )
 
 
 def test_export_task_checkpoint_handoff_and_dismissed_proposal(tmp_path) -> None:
@@ -1200,13 +1167,417 @@ def test_export_task_checkpoint_handoff_and_dismissed_proposal(tmp_path) -> None
     assert any(item["decisionType"] == "proposal_dismissed" and item["targetRef"] == f"proposal:{proposal_id}" for item in decisions)
     assert any(item["type"] == "proposal_dismissed" and item["from"] == f"proposal:{proposal_id}" for item in provenance)
     assert marker not in item_text
-    assert {
-        "type": "checkpoint_for_task",
-        "from": f"checkpoint:{checkpoint['id']}",
-        "to": f"task:{task['id']}",
-    } in provenance
-    assert {
-        "type": "handoff_for_task",
-        "from": f"handoff:{handoff['id']}",
-        "to": f"task:{task['id']}",
-    } in provenance
+    assert any(
+        item["type"] == "checkpoint_for_task"
+        and item["from"] == f"checkpoint:{checkpoint['id']}"
+        and item["to"] == f"task:{task['id']}"
+        for item in provenance
+    )
+    assert any(
+        item["type"] == "handoff_for_task"
+        and item["from"] == f"handoff:{handoff['id']}"
+        and item["to"] == f"task:{task['id']}"
+        for item in provenance
+    )
+
+
+def test_agent_source_excerpt_enforces_scope_privacy_and_budget_errors() -> None:
+    from uuid import uuid4
+
+    from sqlmodel import Session
+
+    from server.app.database import engine
+    from server.app.models import SourceItem
+
+    private_source_id = f"agent-private-{uuid4()}"
+    scoped_source_id = f"agent-task-source-{uuid4()}"
+    marker = "agent-step6-private-needle"
+
+    with TestClient(app) as client:
+        task_a = client.post("/api/tasks", json={"title": "Agent source scope A", "userGoal": "scope A"}).json()["task"]
+        task_b = client.post("/api/tasks", json={"title": "Agent source scope B", "userGoal": "scope B"}).json()["task"]
+
+        with Session(engine) as session:
+            session.add(
+                SourceItem(
+                    id=private_source_id,
+                    source="external_ai",
+                    external_id=private_source_id,
+                    kind="external_ai_note",
+                    title="Agent private source",
+                    content_text=f"Private source before {marker}. " * 20,
+                    metadata_json={"visibility": "private", "privacyLabels": ["private"]},
+                ),
+            )
+            session.add(
+                SourceItem(
+                    id=scoped_source_id,
+                    source="second_brain",
+                    external_id=scoped_source_id,
+                    kind="task_event",
+                    title="Agent scoped source",
+                    content_text="Task scoped source material",
+                    metadata_json={"taskSessionId": task_a["id"]},
+                ),
+            )
+            session.commit()
+
+        denied = client.get(
+            "/api/agent/source-excerpt",
+            params={"ref": f"source:{private_source_id}", "caller": "agent-test", "q": marker},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["detail"]["code"] == "permission_denied"
+
+        allowed = client.get(
+            "/api/agent/source-excerpt",
+            params=[
+                ("ref", f"source:{private_source_id}"),
+                ("caller", "agent-test"),
+                ("q", marker),
+                ("capabilityProfile", "private"),
+                ("capability", "private_memory"),
+                ("maxChars", "80"),
+            ],
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["citationRef"] == f"source:{private_source_id}"
+        assert allowed.json()["budget"]["truncated"] is True
+        assert allowed.json()["warnings"][0]["type"] == "budget_exceeded"
+
+        wrong_task = client.get(
+            "/api/agent/source-excerpt",
+            params={
+                "ref": f"source:{scoped_source_id}",
+                "caller": "agent-test",
+                "taskSessionId": task_b["id"],
+            },
+        )
+        assert wrong_task.status_code == 403
+        assert wrong_task.json()["detail"]["code"] == "permission_denied"
+
+        too_small = client.get(
+            "/api/agent/source-excerpt",
+            params={"ref": f"source:{private_source_id}", "caller": "agent-test", "maxChars": "20"},
+        )
+        assert too_small.status_code == 413
+        assert too_small.json()["detail"]["code"] == "budget_exceeded"
+
+        missing = client.get("/api/agent/source-excerpt", params={"ref": "source:missing-agent-source"})
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "missing_ref"
+
+
+def test_agent_context_filters_profile_memory_without_capability() -> None:
+    from uuid import uuid4
+
+    from sqlmodel import Session, select
+
+    from server.app.database import engine
+    from server.app.memory_core.router import MemoryRouter
+    from server.app.memory_kernel.proposals import create_memory_proposal
+    from server.app.models import MemoryFact
+
+    marker = f"agent-step6-editor-{uuid4()}"
+
+    with Session(engine) as session:
+        proposal = create_memory_proposal(
+            session,
+            proposal_type="profile_fact",
+            title="Agent profile preference",
+            body=f"The user prefers {marker}.",
+            structured_payload={
+                "subject": {"type": "user", "name": "Agent Step6 User"},
+                "predicate": "prefers_editor",
+                "objectValue": marker,
+            },
+            evidence_refs=[f"source:{marker}"],
+        )
+        MemoryRouter().accept_proposal(session, proposal)
+        session.commit()
+        fact_id = session.exec(select(MemoryFact).where(MemoryFact.source_proposal_id == proposal.id)).one().id
+
+    with TestClient(app) as client:
+        hidden = client.get("/api/agent/context", params={"q": marker, "caller": "agent-test"})
+        assert hidden.status_code == 200
+        assert hidden.json()["profileFacts"] == []
+        assert any(warning["type"] == "filtered_private" for warning in hidden.json()["warnings"])
+
+        allowed = client.get(
+            "/api/agent/context",
+            params=[("q", marker), ("caller", "agent-test"), ("capabilityProfile", "profile"), ("capability", "profile_memory")],
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["profileFacts"][0]["ref"] == f"fact:{fact_id}"
+
+        too_small = client.get("/api/agent/context", params={"q": marker, "caller": "agent-test", "maxChars": "100"})
+        assert too_small.status_code == 413
+        assert too_small.json()["detail"]["code"] == "budget_exceeded"
+
+
+def test_agent_tools_preserve_review_gate_and_stale_task_boundaries() -> None:
+    from datetime import timedelta
+
+    from sqlmodel import Session, select
+
+    from server.app.database import engine
+    from server.app.models import KnowledgeItem, TaskSession, utc_now
+
+    marker = "agent-step6-pending-proposal-only"
+
+    with TestClient(app) as client:
+        instructions = client.get("/api/agent/instructions").json()
+        assert instructions["toolsEndpoint"] == "/api/agent/tools"
+        assert any("/api/agent/context" in item["call"] for item in instructions["workflow"])
+        assert any("不能直接写入长期记忆" in rule for rule in instructions["operatingRules"])
+        assert client.get("/api/agent").json()["toolsEndpoint"] == "/api/agent/tools"
+
+        capabilities = client.get("/api/agent/capabilities")
+        assert capabilities.status_code == 200
+        assert capabilities.json()["defaultProfile"] == "work"
+        assert "private" in capabilities.json()["profiles"]
+
+        tools = client.get("/api/agent/tools").json()
+        tool_names = {tool["name"] for tool in tools}
+        assert tool_names == {
+            "list_capability_profiles",
+            "get_context_pack",
+            "get_source_excerpt",
+            "list_active_tasks",
+            "record_task_event",
+            "update_task_state",
+            "create_checkpoint",
+            "get_handoff_pack",
+            "propose_memory",
+            "list_memory_proposals",
+        }
+        assert "accept_memory_proposal" not in tool_names
+        assert all(tool["directLongTermWrite"] is False for tool in tools)
+
+        system_status = client.get("/api/system/status")
+        assert system_status.status_code == 200
+        assert system_status.json()["storage"]["dataDirExists"] is True
+        assert "tasks" in system_status.json()
+
+        created = client.post(
+            "/api/tasks",
+            json={"title": "Agent Step6 task tools", "userGoal": "Verify agent protocol tools"},
+        ).json()
+        task_id = created["task"]["id"]
+
+        event = client.post(
+            f"/api/agent/tasks/{task_id}/events",
+            json={"caller": "agent-test", "type": "agent_action", "summary": "Agent recorded a bounded event"},
+        )
+        assert event.status_code == 200
+        assert event.json()["payload"]["caller"] == "agent-test"
+
+        state = client.patch(
+            f"/api/agent/tasks/{task_id}/state",
+            params={"caller": "agent-test"},
+            json={"currentGoal": "Use stable agent protocol", "nextSteps": ["Check handoff freshness"]},
+        )
+        assert state.status_code == 200
+        assert state.json()["currentGoal"] == "Use stable agent protocol"
+
+        checkpoint = client.post(
+            f"/api/agent/tasks/{task_id}/checkpoints",
+            json={"caller": "agent-test", "title": "Agent checkpoint", "summary": "Checkpoint through agent protocol"},
+        )
+        assert checkpoint.status_code == 200
+
+        with Session(engine) as session:
+            task = session.get(TaskSession, task_id)
+            assert task
+            stale_at = utc_now() - timedelta(days=2)
+            task.updated_at = stale_at
+            task.last_event_at = stale_at
+            session.add(task)
+            session.commit()
+
+        handoff = client.get(f"/api/agent/tasks/{task_id}/handoff", params={"caller": "agent-test", "format": "json"})
+        assert handoff.status_code == 200
+        assert handoff.json()["pack"]["freshness"]["state"] == "stale"
+        assert handoff.json()["warnings"][0]["type"] == "stale_task"
+
+        proposal = client.post(
+            "/api/agent/proposals",
+            json={
+                "caller": "agent-test",
+                "taskSessionId": task_id,
+                "type": "technical_decision",
+                "title": marker,
+                "body": "This should remain pending until the review gate accepts it.",
+                "evidenceRefs": [f"task:{task_id}"],
+            },
+        )
+        assert proposal.status_code == 200
+        proposal_payload = proposal.json()
+        assert proposal_payload["status"] == "pending"
+        assert proposal_payload["knowledgeItemId"] is None
+        assert proposal_payload["sourceItemId"] is None
+
+        assert client.post(f"/api/agent/proposals/{proposal_payload['id']}/accept").status_code == 404
+        listed = client.get("/api/agent/proposals", params={"caller": "agent-test"}).json()
+        assert any(item["id"] == proposal_payload["id"] for item in listed)
+
+        assert client.post(f"/api/tasks/{task_id}/close").status_code == 200
+        stale_write = client.post(
+            f"/api/agent/tasks/{task_id}/events",
+            json={"caller": "agent-test", "type": "agent_action", "summary": "Should be rejected"},
+        )
+        assert stale_write.status_code == 409
+        assert stale_write.json()["detail"]["code"] == "stale_task"
+
+    with Session(engine) as session:
+        assert not session.exec(select(KnowledgeItem).where(KnowledgeItem.title == marker)).all()
+
+
+def test_review_workbench_supports_user_review_actions_and_audit() -> None:
+    from uuid import uuid4
+
+    from sqlmodel import Session, select
+
+    from server.app.database import engine
+    from server.app.memory_core.router import MemoryRouter
+    from server.app.memory_kernel.proposals import create_memory_proposal
+    from server.app.models import MemoryConflict, MemoryFact, SourceItem
+
+    marker = f"review-step7-{uuid4()}"
+    source_id = f"source-{marker}"
+
+    with Session(engine) as session:
+        first = create_memory_proposal(
+            session,
+            proposal_type="profile_fact",
+            title=f"{marker} first profile fact",
+            body="The user prefers Review Editor A.",
+            structured_payload={
+                "subject": {"type": "user", "name": f"{marker} user"},
+                "predicate": "prefers_editor",
+                "objectValue": "Review Editor A",
+            },
+            evidence_refs=[f"source:{marker}-first"],
+        )
+        MemoryRouter().accept_proposal(session, first)
+        second = create_memory_proposal(
+            session,
+            proposal_type="profile_fact",
+            title=f"{marker} conflicting profile fact",
+            body="The user prefers Review Editor B.",
+            structured_payload={
+                "subject": {"type": "user", "name": f"{marker} user"},
+                "predicate": "prefers_editor",
+                "objectValue": "Review Editor B",
+            },
+            evidence_refs=[f"source:{marker}-second"],
+        )
+        MemoryRouter().accept_proposal(session, second)
+        session.add(
+            SourceItem(
+                id=source_id,
+                source="external_ai",
+                external_id=source_id,
+                kind="external_ai_note",
+                title=f"{marker} source",
+                content_text="Sensitive source body should be policy controlled.",
+                metadata_json={"visibility": "workspace", "privacyLabels": []},
+            ),
+        )
+        session.commit()
+        active_fact = session.exec(select(MemoryFact).where(MemoryFact.status == "active", MemoryFact.source_proposal_id == first.id)).one()
+        conflicted_fact = session.exec(select(MemoryFact).where(MemoryFact.status == "conflicted", MemoryFact.source_proposal_id == second.id)).one()
+        conflict = session.exec(select(MemoryConflict).where(MemoryConflict.status == "open")).all()[-1]
+        active_fact_id = active_fact.id
+        conflicted_fact_id = conflicted_fact.id
+        conflict_id = conflict.id
+
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/tasks",
+            json={"title": f"{marker} review task", "userGoal": "create agent audit for review workbench"},
+        ).json()["task"]
+        assert client.get("/api/agent/tasks", params={"caller": "review-agent"}).status_code == 200
+
+        proposal = client.post(
+            "/api/agent/proposals",
+            json={
+                "caller": "review-agent",
+                "taskSessionId": task["id"],
+                "type": "lesson",
+                "title": f"{marker} pending proposal",
+                "body": "Review workbench should reroute this into a project rule.",
+                "evidenceRefs": [f"task:{task['id']}"],
+            },
+        ).json()
+        patched = client.patch(
+            f"/api/review/proposals/{proposal['id']}",
+            json={"type": "project_rule", "targetStore": "rule_preference", "reviewNote": "Rerouted by review workbench"},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["targetStore"] == "rule_preference"
+        assert patched.json()["type"] == "project_rule"
+        assert patched.json()["decisionRef"]
+
+        accepted = client.post(f"/api/review/proposals/{proposal['id']}/accept")
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+
+        supersede = client.post(
+            f"/api/review/profile-facts/{active_fact_id}/supersede",
+            json={
+                "objectValue": "Review Editor C",
+                "evidenceRefs": [f"source:{marker}-supersede"],
+                "reviewNote": "User supplied an updated editor preference",
+            },
+        )
+        assert supersede.status_code == 200
+        assert supersede.json()["type"] == "fact_supersession"
+        assert supersede.json()["status"] == "pending"
+
+        resolved = client.post(
+            f"/api/review/conflicts/{conflict_id}/resolve",
+            json={"resolution": "Review chose the first fact for now.", "winningFactId": active_fact_id},
+        )
+        assert resolved.status_code == 200
+        assert resolved.json()["status"] == "resolved"
+        assert resolved.json()["decisionRef"]
+
+        invalidated = client.post(
+            f"/api/review/profile-facts/{active_fact_id}/invalidate",
+            json={"reason": "User explicitly invalidated this fact after review."},
+        )
+        assert invalidated.status_code == 200
+        assert invalidated.json()["status"] == "invalidated"
+
+        policy = client.patch(
+            f"/api/review/sources/{source_id}/policy",
+            json={"visibility": "private", "privacyLabels": ["sensitive"]},
+        )
+        assert policy.status_code == 200
+        assert policy.json()["visibility"] == "private"
+        assert policy.json()["privacyLabels"] == ["sensitive"]
+
+        purged = client.post(f"/api/review/sources/{source_id}/purge", json={"reason": "Remove sensitive source body"})
+        assert purged.status_code == 200
+        assert purged.json()["status"] == "purged"
+        assert purged.json()["contentChars"] == 0
+
+        workbench = client.get("/api/review/workbench", params={"proposalStatus": "all"})
+        assert workbench.status_code == 200
+        payload = workbench.json()
+        assert any(item["id"] == proposal["id"] and item["status"] == "accepted" for item in payload["proposals"])
+        assert any(item["id"] == active_fact_id and item["status"] == "invalidated" for item in payload["profileFacts"])
+        assert any(item["id"] == conflict_id and item["status"] == "resolved" for item in payload["conflicts"])
+        assert any(item["title"] == f"{marker} pending proposal" for item in payload["rules"])
+        assert any(item["id"] == source_id and item["status"] == "purged" for item in payload["sources"])
+        assert "agentAccesses" not in payload
+        assert "taskCapsules" not in payload
+
+    with Session(engine) as session:
+        from server.app.models import ProvenanceEvent
+
+        assert session.exec(select(ProvenanceEvent).where(ProvenanceEvent.actor == "review-agent")).all()
+        conflicted = session.get(MemoryFact, conflicted_fact_id)
+        assert conflicted
+        assert conflicted.status == "invalidated"

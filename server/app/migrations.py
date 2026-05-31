@@ -237,7 +237,147 @@ def _create_memory_and_task_tables(engine: Engine) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_provenance_events_occurred_at ON provenance_events(occurred_at)"))
 
 
+def _create_profile_graph_tables(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS entities (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    type VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    aliases JSON NOT NULL,
+                    source_refs JSON NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """,
+            ),
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_type ON entities(type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_name ON entities(name)"))
+
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS memory_facts (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    subject_entity_id VARCHAR NOT NULL,
+                    predicate VARCHAR NOT NULL,
+                    object_value TEXT NOT NULL,
+                    object_entity_id VARCHAR,
+                    confidence FLOAT,
+                    valid_at DATETIME NOT NULL,
+                    invalid_at DATETIME,
+                    superseded_by VARCHAR,
+                    evidence_refs JSON NOT NULL,
+                    status VARCHAR NOT NULL,
+                    scope VARCHAR NOT NULL,
+                    source_proposal_id VARCHAR,
+                    decision_ref VARCHAR,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """,
+            ),
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_subject_entity_id ON memory_facts(subject_entity_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_predicate ON memory_facts(predicate)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_object_entity_id ON memory_facts(object_entity_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_valid_at ON memory_facts(valid_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_invalid_at ON memory_facts(invalid_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_superseded_by ON memory_facts(superseded_by)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_status ON memory_facts(status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_scope ON memory_facts(scope)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_source_proposal_id ON memory_facts(source_proposal_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_decision_ref ON memory_facts(decision_ref)"))
+
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS memory_relations (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    from_entity_id VARCHAR NOT NULL,
+                    relation_type VARCHAR NOT NULL,
+                    to_entity_id VARCHAR NOT NULL,
+                    confidence FLOAT,
+                    valid_at DATETIME NOT NULL,
+                    invalid_at DATETIME,
+                    superseded_by VARCHAR,
+                    evidence_refs JSON NOT NULL,
+                    status VARCHAR NOT NULL,
+                    scope VARCHAR NOT NULL,
+                    source_proposal_id VARCHAR,
+                    decision_ref VARCHAR,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """,
+            ),
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_from_entity_id ON memory_relations(from_entity_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_relation_type ON memory_relations(relation_type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_to_entity_id ON memory_relations(to_entity_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_valid_at ON memory_relations(valid_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_invalid_at ON memory_relations(invalid_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_superseded_by ON memory_relations(superseded_by)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_status ON memory_relations(status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_scope ON memory_relations(scope)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_source_proposal_id ON memory_relations(source_proposal_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_relations_decision_ref ON memory_relations(decision_ref)"))
+
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS memory_conflicts (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    conflict_type VARCHAR NOT NULL,
+                    fact_ids JSON NOT NULL,
+                    relation_ids JSON NOT NULL,
+                    reason TEXT NOT NULL,
+                    status VARCHAR NOT NULL,
+                    resolution TEXT NOT NULL,
+                    scope VARCHAR NOT NULL,
+                    decision_ref VARCHAR,
+                    created_at DATETIME NOT NULL,
+                    resolved_at DATETIME
+                )
+                """,
+            ),
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_conflicts_conflict_type ON memory_conflicts(conflict_type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_conflicts_status ON memory_conflicts(status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_conflicts_scope ON memory_conflicts(scope)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_conflicts_decision_ref ON memory_conflicts(decision_ref)"))
+
+
+def _create_task_digest_table(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS task_digests (
+                    task_session_id VARCHAR NOT NULL PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    done JSON NOT NULL,
+                    decisions JSON NOT NULL,
+                    open_questions JSON NOT NULL,
+                    risks JSON NOT NULL,
+                    files_touched JSON NOT NULL,
+                    source_refs JSON NOT NULL,
+                    event_from_id VARCHAR,
+                    event_to_id VARCHAR,
+                    event_count INTEGER NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """,
+            ),
+        )
+
+
 MIGRATIONS: list[Migration] = [
     ("001_create_analysis_jobs", _create_analysis_jobs),
     ("002_create_memory_and_task_tables", _create_memory_and_task_tables),
+    ("003_create_profile_graph_tables", _create_profile_graph_tables),
+    ("004_create_task_digest_table", _create_task_digest_table),
 ]

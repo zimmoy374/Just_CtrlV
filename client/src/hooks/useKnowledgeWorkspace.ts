@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
 import type { FormEvent } from "react"
 
-import { getKnowledgeGraph, listKnowledgePages } from "../lib/api/knowledge"
 import { acceptReflection, dismissReflection, listReflections } from "../lib/api/organization"
 import { searchKnowledge } from "../lib/api/retrieval"
-import type { KnowledgeGraphResponse, KnowledgePageSummary } from "../types/knowledge"
 import type { Reflection } from "../types/organization"
 import type { KnowledgeSearchResult } from "../types/retrieval"
 
-export type AppView = "board" | "search" | "knowledge" | "tasks"
+export type AppView = "board" | "search" | "review"
 
 type WorkspaceNotifications = {
   setError: (value: string | null) => void
@@ -21,9 +19,6 @@ export function useKnowledgeWorkspace({ setError, setToast }: WorkspaceNotificat
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([])
   const [isSearchLoading, setIsSearchLoading] = useState(false)
-  const [graphData, setGraphData] = useState<KnowledgeGraphResponse | null>(null)
-  const [knowledgePages, setKnowledgePages] = useState<KnowledgePageSummary[]>([])
-  const [isGraphLoading, setIsGraphLoading] = useState(false)
   const [reflections, setReflections] = useState<Reflection[]>([])
 
   const runSearch = useCallback(
@@ -57,21 +52,6 @@ export function useKnowledgeWorkspace({ setError, setToast }: WorkspaceNotificat
       // Reflection hints are helpful but should not block the board.
     }
   }, [])
-
-  const openGraph = useCallback(async () => {
-    setView("knowledge")
-    setIsGraphLoading(true)
-    try {
-      const [graph, pages] = await Promise.all([getKnowledgeGraph(), listKnowledgePages()])
-      setGraphData(graph)
-      setKnowledgePages(pages)
-      setError(null)
-    } catch (graphError) {
-      setError(graphError instanceof Error ? graphError.message : "知识地图加载失败")
-    } finally {
-      setIsGraphLoading(false)
-    }
-  }, [setError])
 
   const handleSearchSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -122,13 +102,9 @@ export function useKnowledgeWorkspace({ setError, setToast }: WorkspaceNotificat
     searchQuery,
     searchResults,
     isSearchLoading,
-    graphData,
-    knowledgePages,
-    isGraphLoading,
     reflections,
     runSearch,
     refreshReflections,
-    openGraph,
     handleSearchSubmit,
     handleAcceptReflection,
     handleDismissReflection,

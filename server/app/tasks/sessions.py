@@ -4,24 +4,16 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
-from ..knowledge_core.source_items import validate_choice
 from ..memory_kernel.proposals import create_memory_proposal
-from ..models import TaskSession, utc_now
+from ..models import TaskSession
 from .events import append_task_event
+from .state_machine import (
+    ACTIVE_TASK_SESSION_STATUSES,
+    ensure_task_mutable,
+    transition_task_session,
+    validate_task_status,
+)
 from .state import get_or_create_task_state
-
-
-TASK_SESSION_STATUSES = {
-    "open",
-    "paused",
-    "handoff_ready",
-    "waiting_user",
-    "closing_review",
-    "closed",
-    "archived",
-    "expired",
-}
-ACTIVE_TASK_SESSION_STATUSES = {"open", "paused", "handoff_ready", "waiting_user"}
 
 
 def get_task_session(session: Session, task_id: str) -> TaskSession | None:
@@ -33,8 +25,7 @@ def list_task_sessions(session: Session, *, status: str = "active") -> list[Task
     if status == "active":
         statement = statement.where(TaskSession.status.in_(ACTIVE_TASK_SESSION_STATUSES))
     elif status != "all":
-        validate_choice(status, TASK_SESSION_STATUSES, "taskSessionStatus")
-        statement = statement.where(TaskSession.status == status)
+        statement = statement.where(TaskSession.status == validate_task_status(status))
     return list(session.exec(statement.order_by(TaskSession.updated_at.desc())).all())
 
 
@@ -73,43 +64,23 @@ def create_task_session(
 
 
 def pause_task_session(session: Session, task: TaskSession) -> TaskSession:
-    _ensure_not_terminal(task)
-    task.status = "paused"
-    task.updated_at = utc_now()
-    session.add(task)
-    append_task_event(session, task, event_type="agent_observation", summary="任务已暂停")
-    session.flush()
-    return task
+    return transition_task_session(session, task, "paused", reason="任务已暂停")
 
 
 def archive_task_session(session: Session, task: TaskSession) -> TaskSession:
-    task.status = "archived"
-    task.updated_at = utc_now()
-    session.add(task)
-    session.flush()
-    return task
+    return transition_task_session(session, task, "archived", reason="任务已归档")
 
 
 def close_task_session(session: Session, task: TaskSession) -> TaskSession:
-    _ensure_not_terminal(task)
-    task.status = "closed"
-    now = utc_now()
-    task.closed_at = now
-    task.updated_at = now
-    session.add(task)
-    append_task_event(session, task, event_type="task_closed", summary="用户确认任务结束")
+    ensure_task_mutable(task)
+    transition_task_session(session, task, "closed", reason="用户确认任务结束")
     _create_close_memory_proposal(session, task)
     session.flush()
     return task
 
 
 def set_task_session_status(session: Session, task: TaskSession, status: str) -> TaskSession:
-    validate_choice(status, TASK_SESSION_STATUSES, "taskSessionStatus")
-    task.status = status
-    task.updated_at = utc_now()
-    session.add(task)
-    session.flush()
-    return task
+    return transition_task_session(session, task, status)
 
 
 def _create_close_memory_proposal(session: Session, task: TaskSession) -> None:
@@ -135,8 +106,3 @@ def _create_close_memory_proposal(session: Session, task: TaskSession) -> None:
         evidence_refs=[f"task:{task.id}"],
         task_session_id=task.id,
     )
-
-
-def _ensure_not_terminal(task: TaskSession) -> None:
-    if task.status in {"closed", "archived", "expired"}:
-        raise ValueError("终态任务不能执行该操作")

@@ -9,7 +9,8 @@ from sqlmodel import Session
 from ..knowledge_core.source_items import validate_choice
 from ..models import HandoffPack, TaskSession, utc_now
 from .checkpoints import list_task_checkpoints
-from .events import append_task_event, list_task_events
+from .digests import DEFAULT_RECENT_EVENT_LIMIT, build_or_update_task_digest, task_digest_payload
+from .events import append_task_event
 from .state import get_or_create_task_state
 
 
@@ -29,7 +30,7 @@ def build_task_handoff(
 
     state = get_or_create_task_state(session, task.id, current_goal=task.user_goal)
     checkpoints = list_task_checkpoints(session, task.id)
-    events = list_task_events(session, task.id)
+    digest, events = build_or_update_task_digest(session, task.id, recent_event_limit=DEFAULT_RECENT_EVENT_LIMIT)
     freshness = _task_freshness(task)
 
     return {
@@ -46,6 +47,7 @@ def build_task_handoff(
         "decisions": state.decisions_json or [],
         "risks": state.risks_json or [],
         "filesTouched": state.files_touched_json or [],
+        "taskDigest": task_digest_payload(digest),
         "checkpointRefs": [
             {
                 "ref": f"checkpoint:{checkpoint.id}",
@@ -144,10 +146,10 @@ def _task_freshness(task: TaskSession) -> dict:
     warning = ""
     if task.status == "expired" or (expires_at is not None and expires_at <= now):
         state = "expired"
-        warning = "STALE WARNING: This handoff is for an expired task. Re-check current state before continuing."
+        warning = "过期提醒：这个交接包对应的任务已经过期，继续前请重新确认当前状态。"
     elif reference_at is not None and now - reference_at > STALE_AFTER:
         state = "stale"
-        warning = "STALE WARNING: This handoff may be stale. Re-check current state before continuing."
+        warning = "过期提醒：这个交接包可能已经过期，继续前请重新确认当前状态。"
 
     return {
         "state": state,
@@ -166,6 +168,7 @@ def _handoff_budget(payload: dict, content: str) -> dict:
         "inProgressCount": len(payload["inProgress"]),
         "nextStepsCount": len(payload["nextSteps"]),
         "openQuestionsCount": len(payload["openQuestions"]),
+        "digestEventCount": (payload["taskDigest"] or {}).get("eventCount", 0),
         "checkpointRefCount": len(payload["checkpointRefs"]),
         "sourceRefCount": len(payload["sourceRefs"]),
     }
@@ -179,26 +182,27 @@ def _render_markdown_handoff(payload: dict) -> str:
 
     lines.extend(
         [
-            "# Task Handoff",
+            "# 工作交接",
             "",
-            f"- Task ID: {payload['taskId']}",
-            f"- Status: {payload['status']}",
-            f"- Freshness: {payload['freshness']['state']}",
-            f"- User Goal: {payload['userGoal']}",
-            f"- Current Goal: {payload['currentGoal']}",
+            f"- 工作 ID：{payload['taskId']}",
+            f"- 状态：{payload['status']}",
+            f"- 新鲜度：{payload['freshness']['state']}",
+            f"- 用户目标：{payload['userGoal']}",
+            f"- 当前目标：{payload['currentGoal']}",
             "",
         ],
     )
-    _append_list_section(lines, "Done", payload["done"])
-    _append_list_section(lines, "In Progress", payload["inProgress"])
-    _append_list_section(lines, "Next Steps", payload["nextSteps"])
-    _append_list_section(lines, "Open Questions", payload["openQuestions"])
-    _append_list_section(lines, "Constraints", payload["constraints"])
-    _append_list_section(lines, "Decisions", payload["decisions"])
-    _append_list_section(lines, "Risks", payload["risks"])
-    _append_list_section(lines, "Files Touched", payload["filesTouched"])
-    _append_ref_section(lines, "Checkpoint Refs", payload["checkpointRefs"])
-    _append_ref_section(lines, "Source Refs", payload["sourceRefs"])
+    _append_list_section(lines, "已完成", payload["done"])
+    _append_list_section(lines, "进行中", payload["inProgress"])
+    _append_list_section(lines, "下一步", payload["nextSteps"])
+    _append_list_section(lines, "待确认问题", payload["openQuestions"])
+    _append_list_section(lines, "约束", payload["constraints"])
+    _append_list_section(lines, "决策", payload["decisions"])
+    _append_list_section(lines, "风险", payload["risks"])
+    _append_list_section(lines, "涉及文件", payload["filesTouched"])
+    _append_digest_section(lines, payload.get("taskDigest"))
+    _append_ref_section(lines, "阶段快照引用", payload["checkpointRefs"])
+    _append_ref_section(lines, "最近过程记录引用", payload["sourceRefs"])
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -207,7 +211,7 @@ def _append_list_section(lines: list[str], title: str, values: list[str]) -> Non
     if values:
         lines.extend(f"- {value}" for value in values)
     else:
-        lines.append("- None")
+        lines.append("- 暂无")
     lines.append("")
 
 
@@ -218,7 +222,29 @@ def _append_ref_section(lines: list[str], title: str, refs: list[dict]) -> None:
             label = ref.get("title") or ref.get("eventType") or ref["id"]
             lines.append(f"- `{ref['ref']}` {label}")
     else:
-        lines.append("- None")
+        lines.append("- 暂无")
+    lines.append("")
+
+
+def _append_digest_section(lines: list[str], digest: dict | None) -> None:
+    lines.extend(["## 较早过程摘要", ""])
+    if not digest:
+        lines.extend(["- 暂无压缩摘要", ""])
+        return
+    lines.append(f"- {digest.get('summary') or '较早过程已压缩'}")
+    for title, key in [
+        ("已完成", "done"),
+        ("决策", "decisions"),
+        ("待确认", "openQuestions"),
+        ("风险", "risks"),
+        ("涉及文件", "filesTouched"),
+    ]:
+        values = digest.get(key) or []
+        if values:
+            lines.append(f"- {title}：{'；'.join(values)}")
+    event_count = digest.get("eventCount") or 0
+    if event_count:
+        lines.append(f"- 覆盖事件数：{event_count}")
     lines.append("")
 
 

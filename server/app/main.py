@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .analysis.jobs import run_recoverable_analysis_jobs
 from .database import init_db
-from .routes import cards, knowledge, memory, tasks
+from .routes import agent, cards, knowledge, memory, review, system, tasks
 from .settings import settings
 
 
@@ -23,7 +23,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Just Ctrl V", lifespan=lifespan)
+app = FastAPI(title="second brain", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,3 +45,6 @@ app.include_router(cards.router)
 app.include_router(knowledge.router)
 app.include_router(memory.router)
 app.include_router(tasks.router)
+app.include_router(agent.router)
+app.include_router(review.router)
+app.include_router(system.router)

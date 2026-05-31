@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlmodel import Session
 
 from ..models import TaskState, utc_now
+from .safety import sanitize_task_text
 
 
 TASK_STATE_LIST_FIELDS = {
@@ -90,7 +91,7 @@ def task_state_snapshot(state: TaskState | None) -> dict:
 def _clean_list(values: list[str]) -> list[str]:
     cleaned: list[str] = []
     for value in values:
-        clean = str(value).strip()
+        clean = sanitize_task_text(str(value), limit=600)
         if clean and clean not in cleaned:
             cleaned.append(clean)
     return cleaned

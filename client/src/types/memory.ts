@@ -1,6 +1,6 @@
 export type MemoryProposalStatus = "pending" | "accepted" | "dismissed"
 
-export type MemoryTargetStore = "semantic_knowledge" | "rule_preference" | "procedure_lesson"
+export type MemoryTargetStore = "semantic_knowledge" | "profile_temporal_graph" | "rule_preference" | "procedure_lesson"
 
 export type MemoryProposalType =
   | "lesson"
@@ -10,6 +10,9 @@ export type MemoryProposalType =
   | "workflow_pattern"
   | "technical_decision"
   | "environment_fact"
+  | "profile_fact"
+  | "entity_relation"
+  | "fact_supersession"
   | "page_update"
 
 export type MemoryProposal = {

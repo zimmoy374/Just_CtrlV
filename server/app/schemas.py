@@ -64,33 +64,6 @@ class CardResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class KnowledgeGraphNode(BaseModel):
-    id: str
-    type: str
-    label: str
-    week_key: Optional[str] = Field(default=None, alias="weekKey")
-    count: int = 0
-    weeks: list[str] = Field(default_factory=list)
-    card: Optional[CardResponse] = None
-    knowledge_item: Optional[KnowledgeItemResponse] = Field(default=None, alias="knowledgeItem")
-    status: Optional[str] = None
-    item_count: int = Field(default=0, alias="itemCount")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class KnowledgeGraphEdge(BaseModel):
-    id: str
-    source: str
-    target: str
-    keyword: str
-
-
-class KnowledgeGraphResponse(BaseModel):
-    nodes: list[KnowledgeGraphNode]
-    edges: list[KnowledgeGraphEdge]
-
-
 class KnowledgeItemResponse(BaseModel):
     id: str
     source_item_id: str = Field(alias="sourceItemId")
@@ -149,6 +122,10 @@ class ContextBudgetResponse(BaseModel):
     max_items: int = Field(alias="maxItems")
     max_source_excerpts: int = Field(alias="maxSourceExcerpts")
     max_chars: int = Field(alias="maxChars")
+    max_task_slices: int = Field(default=0, alias="maxTaskSlices")
+    max_rules: int = Field(default=0, alias="maxRules")
+    max_profile_facts: int = Field(default=0, alias="maxProfileFacts")
+    max_procedure_lessons: int = Field(default=0, alias="maxProcedureLessons")
     used_chars: int = Field(alias="usedChars")
     truncated: bool
 
@@ -168,9 +145,12 @@ class ContextKnowledgePageSummary(BaseModel):
     summary: str
     status: str
     keywords: list[str]
-    updated_at: datetime = Field(alias="updatedAt")
+    updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
     citation_ref: str = Field(alias="citationRef")
     item_refs: list[str] = Field(alias="itemRefs")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    decision_ref: Optional[str] = Field(default=None, alias="decisionRef")
+    scope: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -187,7 +167,12 @@ class ContextKnowledgeItemEvidence(BaseModel):
     source_ref: str = Field(alias="sourceRef")
     citation_ref: str = Field(alias="citationRef")
     page_refs: list[str] = Field(alias="pageRefs")
-    updated_at: datetime = Field(alias="updatedAt")
+    updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    decision_ref: Optional[str] = Field(default=None, alias="decisionRef")
+    scope: Optional[str] = None
+    knowledge_type: str = Field(default="fragment", alias="knowledgeType")
+    target_store: str = Field(default="semantic_knowledge", alias="targetStore")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -200,6 +185,66 @@ class ContextSourceExcerpt(BaseModel):
     kind: str
     excerpt: str
     citation_ref: str = Field(alias="citationRef")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextTaskEvent(BaseModel):
+    ref: str
+    title: str
+    summary: str
+    excerpt: str
+    event_type: str = Field(alias="eventType")
+    citation_ref: str = Field(alias="citationRef")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    created_at: Optional[datetime] = Field(default=None, alias="createdAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextTaskState(BaseModel):
+    ref: str
+    title: str
+    summary: str
+    excerpt: str
+    scope: Optional[str] = None
+    staleness: Optional[str] = None
+    citation_ref: str = Field(alias="citationRef")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    decision_ref: Optional[str] = Field(default=None, alias="decisionRef")
+    updated_at: Optional[datetime] = Field(default=None, alias="updatedAt")
+    metadata: dict = Field(default_factory=dict)
+    recent_events: list[ContextTaskEvent] = Field(default_factory=list, alias="recentEvents")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextProfileFact(BaseModel):
+    ref: str
+    kind: str
+    title: str
+    summary: str
+    excerpt: str
+    score: float
+    reason: str
+    scope: Optional[str] = None
+    valid_at: Optional[datetime] = Field(default=None, alias="validAt")
+    invalid_at: Optional[datetime] = Field(default=None, alias="invalidAt")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    citation_ref: str = Field(alias="citationRef")
+    decision_ref: Optional[str] = Field(default=None, alias="decisionRef")
+    conflict_refs: list[str] = Field(default_factory=list, alias="conflictRefs")
+    metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ContextWarning(BaseModel):
+    type: str
+    severity: str
+    message: str
+    refs: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -207,11 +252,17 @@ class ContextSourceExcerpt(BaseModel):
 class ContextPackResponse(BaseModel):
     query: str
     protocol_reminder: list[str] = Field(alias="protocolReminder")
+    task_state: Optional[ContextTaskState] = Field(default=None, alias="taskState")
+    rules: list[ContextKnowledgeItemEvidence] = Field(default_factory=list)
+    profile_facts: list[ContextProfileFact] = Field(default_factory=list, alias="profileFacts")
+    procedure_lessons: list[ContextKnowledgeItemEvidence] = Field(default_factory=list, alias="procedureLessons")
     related_pages: list[ContextKnowledgePageSummary] = Field(alias="relatedPages")
     related_items: list[ContextKnowledgeItemEvidence] = Field(alias="relatedItems")
     source_excerpts: list[ContextSourceExcerpt] = Field(alias="sourceExcerpts")
+    warnings: list[ContextWarning] = Field(default_factory=list)
     budget: ContextBudgetResponse
     citation_refs: list[ContextCitationRef] = Field(alias="citationRefs")
+    decision_refs: list[ContextCitationRef] = Field(default_factory=list, alias="decisionRefs")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -258,7 +309,7 @@ class TaskEventCreate(BaseModel):
     type: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     payload: dict = Field(default_factory=dict)
-    source: str = "just_ctrl_v"
+    source: str = "second_brain"
     source_ref: str = Field(default="", alias="sourceRef")
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")

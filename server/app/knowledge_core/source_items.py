@@ -8,7 +8,7 @@ from ..core.text import html_to_text
 from ..models import SourceItem, utc_now
 
 
-SOURCE_ITEM_SOURCES = {"just_ctrl_v", "external_ai"}
+SOURCE_ITEM_SOURCES = {"second_brain", "external_ai"}
 SOURCE_ITEM_KINDS = {
     "card_text",
     "card_link",

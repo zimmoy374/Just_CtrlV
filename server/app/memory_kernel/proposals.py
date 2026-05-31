@@ -19,6 +19,9 @@ MEMORY_PROPOSAL_TYPES = {
     "workflow_pattern",
     "technical_decision",
     "environment_fact",
+    "profile_fact",
+    "entity_relation",
+    "fact_supersession",
     "page_update",
 }
 MEMORY_PROPOSAL_STATUSES = {"pending", "accepted", "dismissed"}
