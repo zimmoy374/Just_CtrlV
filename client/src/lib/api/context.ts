@@ -5,12 +5,14 @@ type ContextPackOptions = {
   taskSessionId?: string | null
   scope?: string | null
   capability?: string[]
+  maxChars?: number
 }
 
 export async function getContextPack(query: string, options: ContextPackOptions = {}) {
   const params = new URLSearchParams({ q: query })
   if (options.taskSessionId) params.set("taskSessionId", options.taskSessionId)
   if (options.scope) params.set("scope", options.scope)
+  if (options.maxChars) params.set("maxChars", String(options.maxChars))
   for (const capability of options.capability ?? []) {
     params.append("capability", capability)
   }

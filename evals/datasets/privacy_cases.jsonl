@@ -1,0 +1,2 @@
+{"id":"privacy_private_source","query":"private-memory-eval-token","setup":"semantic_private","forbiddenWithoutCapabilities":["PRIVATE_MEMORY_EVAL_SECRET"],"allowedWithCapabilities":["PRIVATE_MEMORY_EVAL_SECRET"],"capabilities":["private_memory"]}
+{"id":"privacy_profile_fact","query":"profile-memory-eval-token","setup":"profile_fact","forbiddenWithoutCapabilities":["PROFILE_MEMORY_EVAL_SECRET"],"allowedWithCapabilities":["PROFILE_MEMORY_EVAL_SECRET"],"capabilities":["profile_memory"]}

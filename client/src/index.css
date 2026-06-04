@@ -839,6 +839,63 @@ button {
   padding: 34px 0 50px;
 }
 
+.context-trace-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(1180px, calc(100vw - 40px));
+  margin: 28px auto 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(60, 94, 112, 0.18);
+  border-radius: 8px;
+  background: rgba(239, 247, 249, 0.78);
+  color: #1e343d;
+}
+
+.context-trace-strip > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.context-trace-strip strong {
+  font-size: 14px;
+}
+
+.context-trace-strip span {
+  color: rgba(30, 52, 61, 0.68);
+  font-size: 12px;
+}
+
+.context-trace-strip dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(54px, 1fr));
+  gap: 8px;
+  min-width: min(420px, 55vw);
+  margin: 0;
+}
+
+.context-trace-strip dl div {
+  display: grid;
+  gap: 2px;
+  min-height: 42px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.context-trace-strip dt {
+  color: rgba(30, 52, 61, 0.64);
+  font-size: 12px;
+}
+
+.context-trace-strip dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 900;
+}
+
 .view-heading {
   display: flex;
   align-items: flex-end;
@@ -1715,6 +1772,18 @@ button {
   .review-workbench {
     width: min(calc(100% - 24px), 1180px);
     padding-top: 18px;
+  }
+
+  .context-trace-strip {
+    align-items: stretch;
+    flex-direction: column;
+    width: min(calc(100% - 24px), 1180px);
+    margin-top: 18px;
+  }
+
+  .context-trace-strip dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
   }
 
   .view-heading {

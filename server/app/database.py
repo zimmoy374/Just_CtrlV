@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
 
+from .database_tuning import configure_sqlite_engine
 from .indexing.sqlite_fts import init_knowledge_search_index
 from .migrations import run_migrations
 from .settings import settings
@@ -16,6 +17,7 @@ def ensure_data_dirs() -> None:
 
 ensure_data_dirs()
 engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
+configure_sqlite_engine(engine)
 
 
 def init_search_index() -> None:

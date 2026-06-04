@@ -2,6 +2,8 @@
 
 `second brain` 是一个本地优先的个人知识与记忆系统。它保存用户拥有的原始证据，把经过审查的内容沉淀成长期记忆，并通过有预算、有引用、有权限边界的 ContextPack 给用户和外部 agent 使用。
 
+面向面试展示和后续开发，项目主线收敛为本地优先的 Agent Memory Kernel；具体取舍、删减原则和实施顺序见 `docs/AGENT_MEMORY_KERNEL_ROADMAP.md`。
+
 ## 核心原则
 
 - 原始证据是最重要的用户资产。
@@ -65,7 +67,7 @@ FastAPI 路由按职责拆分：
 
 ## 读取路径
 
-- `/api/knowledge/search` 搜索经过审查的 semantic knowledge；前端会把当次搜索结果转换成局部关联网络。
+- `/api/knowledge/search` 搜索经过审查的 semantic knowledge；底层检索是本地 hybrid pipeline：SQLite FTS/字段匹配提供 lexical recall，本地 deterministic vector recall 处理词序变化和弱语义相似，RRF 融合后再做轻量 rerank；前端会把当次搜索结果转换成局部关联网络。
 - `/api/knowledge/context` 和 `/api/agent/context` 返回由多个 store slice 组合出来的 ContextPack，并执行 scope、visibility、privacy label、capability、budget、citation、decision 和 warning 控制。
 - `/api/agent/source-excerpt` 只从显式 `source:` ref 返回预算化 excerpt。
 - `/api/agent` 和 `/api/agent/instructions` 是外部 agent 的入口说明；agent 应先读它，再读 `/api/agent/tools`。
@@ -122,7 +124,25 @@ agent 需要更多细节时必须按 ref 读取，不允许全量读取任务历
 python -m pytest server/tests
 cd client
 npm run lint
+npm run test:smoke
 npm run build
 ```
 
 如果改动了前端交互界面，还需要启动应用并在浏览器里检查对应页面。
+
+`evals/` 是独立于回归测试的记忆可靠性 challenge 评分台，完整方法见 `docs/MEMORY_EVALUATION_PROTOCOL.md`。它用本地 JSONL fixture、确定性生成的对抗样例、evaluator 故障注入和真实服务层代码测：
+
+- ContextPack 检索召回、引用覆盖和预算遵守。
+- lexical-only、vector-only 和 hybrid 检索消融，报告 hybrid recall/MRR lift。
+- 跨 agent handoff 的目标、进度、下一步、决策、风险、文件和 TaskDigest 恢复率。
+- 默认 `work` 档的 private/profile/capability/task-scope 泄露率，以及显式 capability 或正确任务作用域的可读性。
+- 待审记忆从 pending 到 accepted 的生命周期、decision/provenance 记录和 agent 工具面直接写入防护。
+- 注入坏结果时 evaluator 是否能抓到缺失检索、隐私泄露、生命周期绕过和 provenance 缺失。
+
+报告会区分 `functionalChallengeScore`、`evaluationRigorScore`、`evidenceLevel` 和 `publicBenchmarkStatus`。内部 challenge 高分仍不能当成 SOTA；公开 LongMemEval / LoCoMo / MemoryAgentBench 适配是下一证据层。
+
+运行：
+
+```powershell
+python evals/run_memory_eval.py --output evals/reports/latest.md --json-output evals/reports/latest.json
+```

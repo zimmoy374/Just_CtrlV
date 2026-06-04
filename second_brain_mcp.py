@@ -4,16 +4,15 @@ import json
 import sys
 from typing import Any
 
-from fastapi import HTTPException
 from sqlmodel import Session
 
 from second_brain import _task_payload, merge_list, resolve_task
 from server.app.agent_runtime.capabilities import list_capability_profiles, resolve_capabilities
+from server.app.agent_runtime.protocol import AgentProtocolError, build_agent_context_pack, read_agent_source_excerpt
 from server.app.agent_runtime.workspace import write_workspace_state
 from server.app.database import engine, init_db
 from server.app.memory_kernel.proposals import create_memory_proposal
 from server.app.models import TaskSession
-from server.app.routes.agent import get_agent_context_pack_api, get_agent_source_excerpt_api
 from server.app.tasks.checkpoints import create_task_checkpoint
 from server.app.tasks.events import append_task_event
 from server.app.tasks.handoff import preview_handoff_pack
@@ -256,7 +255,8 @@ def _tool_checkpoint(session: Session, args: dict[str, Any]) -> dict[str, Any]:
 def _tool_search_memory(session: Session, args: dict[str, Any]) -> dict[str, Any]:
     try:
         capabilities = _resolve_mcp_capabilities(args)
-        response = get_agent_context_pack_api(
+        context_pack = build_agent_context_pack(
+            session,
             q=str(args.get("query") or ""),
             caller=str(args.get("caller") or "mcp-agent"),
             task_session_id=args.get("taskSessionId") or None,
@@ -268,19 +268,20 @@ def _tool_search_memory(session: Session, args: dict[str, Any]) -> dict[str, Any
             source_excerpt_limit=int(args.get("sourceExcerptLimit") or 3),
             profile_fact_limit=int(args.get("profileFactLimit") or 5),
             max_chars=int(args.get("maxChars") or 4000),
-            session=session,
         )
-    except HTTPException as exc:
+        session.commit()
+    except AgentProtocolError as exc:
         return {"ok": False, "error": exc.detail}
     except ValueError as exc:
         return {"ok": False, "error": {"code": "invalid_capability_profile", "message": str(exc), "refs": []}}
-    return {"ok": True, "contextPack": response.model_dump(mode="json", by_alias=True)}
+    return {"ok": True, "contextPack": context_pack}
 
 
 def _tool_read_evidence(session: Session, args: dict[str, Any]) -> dict[str, Any]:
     try:
         capabilities = _resolve_mcp_capabilities(args)
-        response = get_agent_source_excerpt_api(
+        evidence = read_agent_source_excerpt(
+            session,
             ref=str(args["ref"]),
             q=str(args.get("query") or ""),
             caller=str(args.get("caller") or "mcp-agent"),
@@ -289,13 +290,13 @@ def _tool_read_evidence(session: Session, args: dict[str, Any]) -> dict[str, Any
             capability_profile=str(args.get("capabilityProfile") or "work"),
             capabilities=capabilities,
             max_chars=int(args.get("maxChars") or 800),
-            session=session,
         )
-    except HTTPException as exc:
+        session.commit()
+    except AgentProtocolError as exc:
         return {"ok": False, "error": exc.detail}
     except ValueError as exc:
         return {"ok": False, "error": {"code": "invalid_capability_profile", "message": str(exc), "refs": []}}
-    return {"ok": True, "evidence": response.model_dump(mode="json", by_alias=True)}
+    return {"ok": True, "evidence": evidence}
 
 
 def _tool_propose_memory(session: Session, args: dict[str, Any]) -> dict[str, Any]:

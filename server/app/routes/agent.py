@@ -6,14 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
-from ..agent_runtime.capabilities import list_capability_profiles, resolve_capabilities
+from ..agent_runtime.capabilities import list_capability_profiles
+from ..agent_runtime.protocol import (
+    AgentProtocolError,
+    agent_protocol_warning,
+    audit_agent_tool_call,
+    build_agent_context_pack,
+    dedupe_refs,
+    read_agent_source_excerpt,
+    validate_agent_scope,
+)
 from ..database import get_session
-from ..memory_core.composer import MemoryContextComposer
-from ..memory_core.context_helpers import excerpt_around
-from ..memory_core.decisions import record_provenance_event
-from ..memory_core.protocol import MemoryRef
 from ..memory_kernel.proposals import create_memory_proposal, list_memory_proposals
-from ..models import SourceItem, TaskSession, utc_now
+from ..models import TaskSession, utc_now
 from ..presenters import (
     memory_proposal_to_response,
     task_checkpoint_to_response,
@@ -126,6 +131,7 @@ class AgentProtocolInstructions(BaseModel):
     name: str
     purpose: str
     tools_endpoint: str = Field(alias="toolsEndpoint")
+    runtime_policy: dict[str, Any] = Field(alias="runtimePolicy")
     operating_rules: list[str] = Field(alias="operatingRules")
     workflow: list[dict[str, Any]]
     refs: dict[str, str]
@@ -136,8 +142,21 @@ class AgentProtocolInstructions(BaseModel):
 def _agent_protocol_instructions() -> AgentProtocolInstructions:
     return AgentProtocolInstructions(
         name="second brain agent protocol",
-        purpose="让外部工具按权限读取个人知识、引用原始证据，并把值得长期保存的内容提交为待审记忆。",
+        purpose="让外部工具安静地恢复和记录工作状态，按权限读取个人知识、引用原始证据，并把值得长期保存的内容提交为待审记忆。",
         toolsEndpoint="/api/agent/tools",
+        runtimePolicy={
+            "defaultMode": "balanced",
+            "modes": {
+                "quiet": "后台记录工作状态，不主动向用户提示成功记录。",
+                "balanced": "默认模式。阶段性静默记录；只有保存、换 agent、明天继续、先到这等交接节点才短提示。",
+                "verbose": "调试模式。可以向用户展示记录细节。",
+            },
+            "rules": [
+                "不要在每次 record_progress 或 update_task_state 后告诉用户已经记录。",
+                "用户表达保存、换 agent、明天继续、先到这时，创建 checkpoint 或 handoff，并只短提示一次。",
+                "工作状态写入 task memory；长期价值内容只能提交 pending proposal。",
+            ],
+        },
         operatingRules=[
             "先读取 /api/agent/instructions，再读取 /api/agent/tools。",
             "读取个人资料、私密或敏感内容时，必须显式声明 capabilityProfile；默认 work 档位不会暴露这些内容。",
@@ -146,6 +165,7 @@ def _agent_protocol_instructions() -> AgentProtocolInstructions:
             "外部工具不能直接写入长期记忆，只能调用 /api/agent/proposals 提交待审记忆。",
             "外部工具不能接受、拒绝、覆盖、删除记忆，也不能解决冲突或清除原始证据。",
             "所有写入都必须带 caller；涉及具体任务时带 taskSessionId 或 task: scope。",
+            "阶段性工作状态可以静默记录；用户不需要每次看到记录成功提示。",
         ],
         workflow=[
             {
@@ -216,10 +236,13 @@ def list_agent_tools_api() -> list[AgentToolInfo]:
     writing_tools = {"record_task_event", "update_task_state", "create_checkpoint", "propose_memory"}
     restrictions = {
         "list_capability_profiles": ["只返回本地权限档位说明，不授予远程安全权限。"],
-        "propose_memory": ["只能创建待审记忆；不暴露接受、解决冲突、失效事实或删除证据的能力。"],
+        "record_task_event": ["只写工作状态事件，不写正式长期记忆；默认应静默记录，避免打扰用户。"],
+        "update_task_state": ["只更新 task state，服务跨 agent 接力；不是长期记忆写入。"],
+        "create_checkpoint": ["用于保存阶段快照；只在保存、换 agent、明天继续、先到这等节点短提示用户。"],
+        "propose_memory": ["只能创建 pending 待审记忆；不暴露接受、解决冲突、失效事实或删除证据的能力。"],
         "get_context_pack": ["按预算和范围过滤；永远不返回全库内容。"],
         "get_source_excerpt": ["必须提供 source 引用；读取私密、个人资料或敏感证据需要显式能力。"],
-        "get_handoff_pack": ["只返回预览；过期或已关闭任务会明确提示。"],
+        "get_handoff_pack": ["用于跨 agent 接力，不替代全量历史读取；过期或已关闭任务会明确提示。"],
     }
     return [
         AgentToolInfo(
@@ -258,42 +281,23 @@ def get_agent_context_pack_api(
     max_chars: int = Query(4000, alias="maxChars", le=12000),
     session: Session = Depends(get_session),
 ) -> ContextPackResponse:
-    if max_chars < 500:
-        raise _agent_http_error(413, "budget_exceeded", "ContextPack 的 maxChars 至少为 500。")
-    _validate_scope(session, task_session_id=task_session_id, scope=scope)
-    resolved_capabilities = _resolve_agent_capabilities(capability_profile, capabilities)
-    pack = MemoryContextComposer().build_context_pack(
-        session,
-        query=q,
-        task_session_id=task_session_id,
-        scope=scope,
-        capabilities=resolved_capabilities,
-        max_pages=page_limit,
-        max_items=item_limit,
-        max_source_excerpts=source_excerpt_limit,
-        max_profile_facts=profile_fact_limit,
-        max_chars=max_chars,
-    )
-    if pack["budget"]["truncated"]:
-        pack["warnings"].append(
-            _agent_warning(
-                "budget_exceeded",
-                "warning",
-                f"ContextPack 已为调用方 {caller} 截断；请缩小查询词或提高 maxChars。",
-            ),
+    try:
+        pack = build_agent_context_pack(
+            session,
+            q=q,
+            caller=caller,
+            task_session_id=task_session_id,
+            scope=scope,
+            capability_profile=capability_profile,
+            capabilities=capabilities,
+            item_limit=item_limit,
+            page_limit=page_limit,
+            source_excerpt_limit=source_excerpt_limit,
+            profile_fact_limit=profile_fact_limit,
+            max_chars=max_chars,
         )
-    _audit_agent_tool_call(
-        session,
-        tool_name="get_context_pack",
-        caller=caller,
-        task_session_id=task_session_id,
-        scope=scope,
-        refs=_context_refs(pack),
-        budget=pack["budget"],
-        warnings=pack["warnings"],
-        capability_profile=capability_profile,
-        capabilities=resolved_capabilities,
-    )
+    except AgentProtocolError as exc:
+        raise _agent_protocol_http_error(exc) from exc
     session.commit()
     return ContextPackResponse.model_validate(pack)
 
@@ -310,42 +314,22 @@ def get_agent_source_excerpt_api(
     max_chars: int = Query(800, alias="maxChars", le=2000),
     session: Session = Depends(get_session),
 ) -> AgentSourceExcerptResponse:
-    if max_chars < 80:
-        raise _agent_http_error(413, "budget_exceeded", "证据摘录的 maxChars 至少为 80。", refs=[ref])
-    _validate_scope(session, task_session_id=task_session_id, scope=scope)
-    resolved_capabilities = _resolve_agent_capabilities(capability_profile, capabilities)
-    source_item = _source_item_from_ref(session, ref)
-    _ensure_source_visible(source_item, task_session_id=task_session_id, scope=scope, capabilities=resolved_capabilities)
-    excerpt = excerpt_around(source_item.content_text or "", q, limit=max_chars)
-    truncated = len(" ".join((source_item.content_text or "").split())) > len(excerpt)
-    warnings = [_agent_warning("budget_exceeded", "warning", "证据摘录已按 maxChars 截断。")] if truncated else []
-    source_ref = f"source:{source_item.id}"
-    budget = {"maxChars": max_chars, "usedChars": len(excerpt), "truncated": truncated}
-    _audit_agent_tool_call(
-        session,
-        tool_name="get_source_excerpt",
-        caller=caller,
-        task_session_id=task_session_id,
-        scope=scope,
-        refs=[source_ref],
-        to_ref=source_ref,
-        budget=budget,
-        warnings=warnings,
-        capability_profile=capability_profile,
-        capabilities=resolved_capabilities,
-    )
+    try:
+        payload = read_agent_source_excerpt(
+            session,
+            ref=ref,
+            caller=caller,
+            q=q,
+            task_session_id=task_session_id,
+            scope=scope,
+            capability_profile=capability_profile,
+            capabilities=capabilities,
+            max_chars=max_chars,
+        )
+    except AgentProtocolError as exc:
+        raise _agent_protocol_http_error(exc) from exc
     session.commit()
-    return AgentSourceExcerptResponse(
-        ref=source_ref,
-        sourceItemId=source_item.id,
-        title=source_item.title,
-        kind=source_item.kind,
-        excerpt=excerpt,
-        citationRef=source_ref,
-        evidenceRefs=[source_ref],
-        budget=budget,
-        warnings=warnings,
-    )
+    return AgentSourceExcerptResponse.model_validate(payload)
 
 
 @router.get("/tasks", response_model=list[TaskSessionResponse])
@@ -354,7 +338,7 @@ def list_agent_active_tasks_api(
     session: Session = Depends(get_session),
 ) -> list[TaskSessionResponse]:
     tasks = list_task_sessions(session, status="active")
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="list_active_tasks",
         caller=caller,
@@ -384,7 +368,7 @@ def record_agent_task_event_api(
         )
     except ValueError as exc:
         raise _agent_http_error(400, "invalid_request", str(exc)) from exc
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="record_task_event",
         caller=payload.caller,
@@ -421,7 +405,7 @@ def update_agent_task_state_api(
         files_touched=payload.files_touched,
         confidence=payload.confidence,
     )
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="update_task_state",
         caller=caller,
@@ -446,7 +430,7 @@ def create_agent_checkpoint_api(
         checkpoint = create_task_checkpoint(session, task, title=payload.title, summary=payload.summary)
     except ValueError as exc:
         raise _agent_http_error(400, "invalid_request", str(exc)) from exc
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="create_checkpoint",
         caller=payload.caller,
@@ -475,8 +459,8 @@ def get_agent_handoff_pack_api(
     warnings = []
     freshness = pack.get("freshness") or {}
     if freshness.get("isStale") or freshness.get("warning"):
-        warnings.append(_agent_warning("stale_task", "warning", freshness.get("warning") or "Task handoff may be stale.", [f"task:{task.id}"]))
-    _audit_agent_tool_call(
+        warnings.append(agent_protocol_warning("stale_task", "warning", freshness.get("warning") or "Task handoff may be stale.", [f"task:{task.id}"]))
+    audit_agent_tool_call(
         session,
         tool_name="get_handoff_pack",
         caller=caller,
@@ -503,8 +487,8 @@ def propose_agent_memory_api(
     payload: AgentMemoryProposalCreate,
     session: Session = Depends(get_session),
 ) -> MemoryProposalResponse:
-    _validate_scope(session, task_session_id=payload.task_session_id, scope=payload.scope)
     try:
+        validate_agent_scope(session, task_session_id=payload.task_session_id, scope=payload.scope)
         proposal = create_memory_proposal(
             session,
             proposal_type=payload.type,
@@ -518,9 +502,11 @@ def propose_agent_memory_api(
             evidence_refs=payload.evidence_refs,
             task_session_id=payload.task_session_id,
         )
+    except AgentProtocolError as exc:
+        raise _agent_protocol_http_error(exc) from exc
     except ValueError as exc:
         raise _agent_http_error(400, "invalid_request", str(exc)) from exc
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="propose_memory",
         caller=payload.caller,
@@ -545,7 +531,7 @@ def list_agent_memory_proposals_api(
         proposals = list_memory_proposals(session, status=status)
     except ValueError as exc:
         raise _agent_http_error(400, "invalid_request", str(exc)) from exc
-    _audit_agent_tool_call(
+    audit_agent_tool_call(
         session,
         tool_name="list_memory_proposals",
         caller=caller,
@@ -553,94 +539,6 @@ def list_agent_memory_proposals_api(
     )
     session.commit()
     return [memory_proposal_to_response(proposal) for proposal in proposals]
-
-
-def _source_item_from_ref(session: Session, ref_value: str) -> SourceItem:
-    try:
-        ref = MemoryRef.parse(ref_value)
-    except ValueError as exc:
-        raise _agent_http_error(400, "invalid_ref", str(exc), refs=[ref_value]) from exc
-    if ref.kind != "source":
-        raise _agent_http_error(400, "invalid_ref", "get_source_excerpt only accepts source refs.", refs=[ref_value])
-    source_item = session.get(SourceItem, ref.id)
-    if not source_item or source_item.status != "active":
-        raise _agent_http_error(404, "missing_ref", "Source ref was not found or is not active.", refs=[ref_value])
-    return source_item
-
-
-def _ensure_source_visible(
-    source_item: SourceItem,
-    *,
-    task_session_id: str | None,
-    scope: str | None,
-    capabilities: list[str],
-) -> None:
-    metadata = source_item.metadata_json or {}
-    source_task_id = metadata.get("taskSessionId")
-    scoped_task_id = _task_id_from_scope(scope)
-    requested_task_id = task_session_id or scoped_task_id
-    if source_task_id and requested_task_id and source_task_id != requested_task_id:
-        raise _agent_http_error(
-            403,
-            "permission_denied",
-            "Source belongs to a different task scope.",
-            refs=[f"source:{source_item.id}", f"task:{source_task_id}"],
-        )
-    source_scope_task_id = _task_id_from_scope(str(metadata.get("scope") or ""))
-    if source_scope_task_id and requested_task_id and source_scope_task_id != requested_task_id:
-        raise _agent_http_error(
-            403,
-            "permission_denied",
-            "Source belongs to a different task scope.",
-            refs=[f"source:{source_item.id}", f"task:{source_scope_task_id}"],
-        )
-    if (source_task_id or source_scope_task_id) and not requested_task_id:
-        raise _agent_http_error(
-            403,
-            "permission_denied",
-            "Task-scoped source requires taskSessionId.",
-            refs=[f"source:{source_item.id}", f"task:{source_task_id or source_scope_task_id}"],
-        )
-    capability_set = set(capabilities)
-    privacy_labels = metadata.get("privacyLabels") or []
-    visibility = metadata.get("visibility") or "workspace"
-    if visibility == "profile" and "profile_memory" not in capability_set:
-        raise _agent_http_error(403, "permission_denied", "Profile source requires profile_memory capability.", refs=[f"source:{source_item.id}"])
-    if visibility == "private" and not ({"private_memory", "sensitive_memory"} & capability_set):
-        raise _agent_http_error(403, "permission_denied", "Private source requires private_memory capability.", refs=[f"source:{source_item.id}"])
-    if privacy_labels and not ({"private_memory", "sensitive_memory", "profile_memory"} & capability_set):
-        raise _agent_http_error(403, "permission_denied", "Sensitive source requires an explicit privacy capability.", refs=[f"source:{source_item.id}"])
-    requirements = metadata.get("capabilityRequirements") or []
-    required_capabilities = {str(item) for item in requirements if item}
-    if not required_capabilities.issubset(capability_set):
-        raise _agent_http_error(
-            403,
-            "permission_denied",
-            "Source requires unavailable capability.",
-            refs=[f"source:{source_item.id}"],
-        )
-
-
-def _validate_scope(session: Session, *, task_session_id: str | None, scope: str | None) -> None:
-    if task_session_id and not get_task_session(session, task_session_id):
-        raise _agent_http_error(404, "missing_ref", "Task session was not found.", refs=[f"task:{task_session_id}"])
-    scoped_task_id = _task_id_from_scope(scope)
-    if scoped_task_id and not get_task_session(session, scoped_task_id):
-        raise _agent_http_error(404, "missing_ref", "Task session was not found.", refs=[f"task:{scoped_task_id}"])
-    if task_session_id and scoped_task_id and task_session_id != scoped_task_id:
-        raise _agent_http_error(
-            403,
-            "permission_denied",
-            "taskSessionId and scope refer to different tasks.",
-            refs=[f"task:{task_session_id}", f"task:{scoped_task_id}"],
-        )
-
-
-def _resolve_agent_capabilities(capability_profile: str | None, capabilities: list[str] | None) -> list[str]:
-    try:
-        return resolve_capabilities(capability_profile, capabilities)
-    except ValueError as exc:
-        raise _agent_http_error(400, "invalid_capability_profile", str(exc)) from exc
 
 
 def _require_task(session: Session, task_id: str) -> TaskSession:
@@ -657,73 +555,15 @@ def _ensure_task_mutable(task: TaskSession) -> None:
         raise _agent_http_error(409, "stale_task", "Terminal task cannot be mutated by agent tools.", refs=[f"task:{task.id}"])
 
 
-def _task_id_from_scope(scope: str | None) -> str | None:
-    if not scope:
-        return None
-    try:
-        ref = MemoryRef.parse(scope)
-    except ValueError:
-        return None
-    return ref.id if ref.kind == "task" else None
-
-
-def _context_refs(pack: dict[str, Any]) -> list[str]:
-    citation_refs = [str(ref.get("ref") or "") for ref in pack.get("citationRefs", [])]
-    decision_refs = [str(ref.get("ref") or "") for ref in pack.get("decisionRefs", [])]
-    return _dedupe_refs([*citation_refs, *decision_refs])
-
-
 def _handoff_refs(pack: dict[str, Any]) -> list[str]:
     refs = [f"task:{pack.get('taskId')}"] if pack.get("taskId") else []
     refs.extend(str(item.get("ref") or "") for item in pack.get("checkpointRefs", []))
     refs.extend(str(item.get("ref") or "") for item in pack.get("sourceRefs", []))
-    return _dedupe_refs(refs)
+    return dedupe_refs(refs)
 
 
-def _audit_agent_tool_call(
-    session: Session,
-    *,
-    tool_name: str,
-    caller: str,
-    task_session_id: str | None = None,
-    scope: str | None = None,
-    refs: list[str] | None = None,
-    to_ref: str | None = None,
-    budget: dict | None = None,
-    warnings: list[dict[str, Any]] | None = None,
-    capability_profile: str | None = None,
-    capabilities: list[str] | None = None,
-    write: bool = False,
-) -> None:
-    clean_refs = _dedupe_refs(refs or [])
-    record_provenance_event(
-        session,
-        event_type="agent_tool_write" if write else "agent_tool_read",
-        from_ref=f"task:{task_session_id}" if task_session_id else None,
-        to_ref=to_ref,
-        reason=f"{(caller or 'agent').strip() or 'agent'} called {tool_name}",
-        evidence_refs=clean_refs,
-        payload={
-            "tool": tool_name,
-            "caller": (caller or "agent").strip() or "agent",
-            "taskSessionId": task_session_id,
-            "scope": scope,
-            "budget": budget or {},
-            "warnings": warnings or [],
-            "refs": clean_refs,
-            "capabilityProfile": capability_profile or "work",
-            "capabilities": capabilities or [],
-        },
-        actor=(caller or "agent").strip() or "agent",
-    )
-
-
-def _dedupe_refs(refs: list[str]) -> list[str]:
-    return [ref for ref in dict.fromkeys(refs) if ref]
-
-
-def _agent_warning(code: str, severity: str, message: str, refs: list[str] | None = None) -> dict[str, Any]:
-    return {"type": code, "severity": severity, "message": message, "refs": refs or []}
+def _agent_protocol_http_error(error: AgentProtocolError) -> HTTPException:
+    return HTTPException(status_code=error.status_code, detail=error.detail)
 
 
 def _agent_http_error(status_code: int, code: str, message: str, refs: list[str] | None = None) -> HTTPException:

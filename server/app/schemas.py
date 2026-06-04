@@ -249,6 +249,20 @@ class ContextWarning(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ContextSelectionTraceEntry(BaseModel):
+    status: str
+    ref: str
+    kind: str
+    store: str
+    section: str
+    reason: str
+    score: float = 0.0
+    used_chars: int = Field(default=0, alias="usedChars")
+    citation_ref: str = Field(default="", alias="citationRef")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class ContextPackResponse(BaseModel):
     query: str
     protocol_reminder: list[str] = Field(alias="protocolReminder")
@@ -263,6 +277,7 @@ class ContextPackResponse(BaseModel):
     budget: ContextBudgetResponse
     citation_refs: list[ContextCitationRef] = Field(alias="citationRefs")
     decision_refs: list[ContextCitationRef] = Field(default_factory=list, alias="decisionRefs")
+    selection_trace: list[ContextSelectionTraceEntry] = Field(default_factory=list, alias="selectionTrace")
 
     model_config = ConfigDict(populate_by_name=True)
 

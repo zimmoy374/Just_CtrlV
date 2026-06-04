@@ -1,6 +1,8 @@
 # second brain
 
-一个本地优先的个人知识与记忆系统。你可以保存截图、文本和链接，把它们沉淀成可搜索、可导出、可给外部 agent 按协议读取的 second brain。
+一个本地优先的 Agent Memory Core。它把用户拥有的原始证据保存为可审计资产，把经过审查的内容沉淀成长期记忆，并通过有预算、有引用、有权限边界的 ContextPack 给外部 agent 接力使用。
+
+项目重点不是做更多页面，而是证明 agent 接入后能更可靠地恢复任务状态、读取相关上下文、提交待审记忆，并用可复现评测说明它不是玩具 demo。
 
 ## 安装
 
@@ -19,8 +21,6 @@ OPENAI_MODEL=支持识图的模型名
 SECOND_BRAIN_DATA_DIR=.data
 ```
 
-没有的话：推荐搜推理时代，里面找带'free'并且支持图片输入的模型，直接配置到.env里就能体验。
-
 ## 运行
 
 双击 `run.py`，或运行：
@@ -33,17 +33,17 @@ python run.py
 
 ## 使用
 
-- 双击画布空白处新增文本卡片。
-- 截图后回到页面按 `Ctrl+V`，图片会粘贴成卡片。
-- 按住画布空白处拖动，可以移动整块画布。
-- 双击图片卡片可以放大查看，滚轮缩放，按住图片拖动，点击图片外关闭。
-- 点击关键词可复制，悬停关键词可删除。
+- Capture Inbox：保存文本、链接和图片证据；截图后回到页面按 `Ctrl+V` 可以粘贴成证据卡片。
+- Search & Context：搜索经过审查的长期记忆，查看命中原因、局部结果解释、ContextPack 和 selection trace。
+- Review Gate：审查待审记忆、证据权限、事实冲突和导出包。
+- Agent Handoff：外部 agent 进入项目后先 `resume`，阶段完成时静默 `note --quiet`，换 agent 或收尾时保存 checkpoint。
 
 ## 知识库
 
 - 统一检索入口是 `/api/knowledge/search`，当前会搜索正式 KnowledgeItem。
+- 检索层采用本地优先的 hybrid pipeline：SQLite FTS/字段匹配召回、本地 deterministic vector 召回、RRF 融合和轻量重排；外部向量库或云 embedding 可以后续替换 provider。
 - 搜索页会基于当次搜索结果自动生成局部关联网络，不维护单独的全库关系入口。
-- 外部 agent 先读取 `/api/agent` 或 `/api/agent/instructions`，再读取 `/api/agent/tools`，然后通过 `/api/agent/context?q=...` 按预算获取 ContextPack；它不需要也不应该全量读取知识库。
+- 外部 agent 先读取 `/api/agent` 或 `/api/agent/instructions`，再读取 `/api/agent/tools`，然后通过 `/api/agent/context?q=...` 按预算获取 ContextPack；`selectionTrace` 会说明选中、过滤、去重和截断原因，它不需要也不应该全量读取知识库。
 - 外部 AI 已经让用户预览并确认的整理结果，可以通过 `/api/knowledge/import-confirmed` 写入正式知识库。
 - 记忆审查台只处理待审记忆、个人事实、冲突、规则、流程经验、知识页和原始证据；任务接力状态不会混进这个页面。
 - 用户卸载或迁移前，可以调用 `/api/knowledge/export` 导出 SourceItem、KnowledgeItem、KnowledgePage、MemoryProposal、外部 agent 协议记录和 provenance。
@@ -82,7 +82,9 @@ MCP 工具包括 `resume_work`、`record_progress`、`checkpoint_work`、`search
 ## 架构约定
 
 - 当前整体架构说明见 `docs/SECOND_BRAIN_ARCHITECTURE.md`。
-- 跨 agent 接力路线见 `docs/SECOND_BRAIN_AGENT_CONTINUITY_PLAN.md`。
+- 面试导向的项目收敛和后续实施路线见 `docs/AGENT_MEMORY_KERNEL_ROADMAP.md`。
+- 外部 agent 接入后是否真的有用的评估方案见 `docs/AGENT_USEFULNESS_EVALUATION.md`。
+- 记忆评测协议见 `docs/MEMORY_EVALUATION_PROTOCOL.md`。
 - SourceItem、KnowledgeItem、KnowledgePage、MemoryProposal、MemoryDecision、ProvenanceEvent 和 Profile Temporal Graph 是稳定核心。
 - 外部 agent 只能读取受限上下文、读取明确引用的证据摘录、提交待审记忆；不能直接写入长期记忆、覆盖事实、解决冲突或清除证据。
 - 任务状态切换集中由状态机处理，`/api/tasks/*` 和 `/api/agent/tasks/*` 都不能绕过终态保护。
@@ -99,5 +101,24 @@ MCP 工具包括 `resume_work`、`record_progress`、`checkpoint_work`、`search
 python -m pytest -q
 cd client
 npm run lint
+npm run test:smoke
 npm run build
+```
+
+记忆可靠性 challenge 评分台在 `evals/`，用于输出可复现的 ContextPack 检索、selection trace、跨 agent 接力、隐私/作用域隔离、审查门生命周期和 evaluator 故障注入指标；报告会区分功能分、评测严格度、证据等级和公开 benchmark 状态，避免把内部高分误写成 SOTA：
+
+```powershell
+python evals/run_memory_eval.py --output evals/reports/latest.md --json-output evals/reports/latest.json
+```
+
+本地规模压测独立运行，覆盖 SQLite 数据增长、hybrid retrieval 延迟/QPS、并发读和并发写冲突。它不是生产分布式 QPS 宣称，而是给简历和面试提供可复现实验口径：
+
+```powershell
+python evals/run_scale_benchmark.py --sizes 1000 5000 --queries 40 --read-workers 2 --write-workers 2 --writes-per-worker 10 --output evals/reports/scale_latest.md --json-output evals/reports/scale_latest.json
+```
+
+外部 agent 接入后是否真的有用，用 Agent Usefulness Eval 做 baseline 对比，衡量接力恢复、任务继续收益、重复工作下降、ContextPack 有用率和安全边界：
+
+```powershell
+python evals/run_agent_usefulness_eval.py --output evals/reports/agent_usefulness_latest.md --json-output evals/reports/agent_usefulness_latest.json
 ```

@@ -51,6 +51,7 @@ def main() -> None:
     note_parser.add_argument("--agent", default="agent", help="当前 agent 名称。")
     note_parser.add_argument("--current-goal", default=None, help="更新当前目标。")
     note_parser.add_argument("--replace", action="store_true", help="替换本次传入的列表字段，而不是追加。")
+    note_parser.add_argument("--quiet", action="store_true", help="成功时不输出，适合 agent hook 静默记录。")
     add_list_argument(note_parser, "--done", "追加已完成事项。")
     add_list_argument(note_parser, "--in-progress", "追加进行中事项。")
     add_list_argument(note_parser, "--next", "追加下一步事项。")
@@ -67,6 +68,7 @@ def main() -> None:
     checkpoint_parser.add_argument("--summary", default="", help="检查点摘要。")
     checkpoint_parser.add_argument("--task-id", default="", help="指定工作会话 ID；默认读取最近活跃会话。")
     checkpoint_parser.add_argument("--json", action="store_true", help="输出 JSON。")
+    checkpoint_parser.add_argument("--quiet", action="store_true", help="成功时不输出，适合 agent hook 静默记录。")
     add_workspace_argument(checkpoint_parser)
 
     health_parser = subparsers.add_parser("healthcheck", help="检查 second brain CLI、数据库和当前工作区绑定。")
@@ -138,8 +140,20 @@ def handle_resume(session: Session, args: argparse.Namespace) -> None:
     task = resolve_task(session, args.task_id, include_closed=args.include_closed, workspace_root=_workspace_arg(args))
     if not task:
         message = "当前工作区没有绑定的活跃工作会话。先运行：python second_brain.py start --goal \"你的目标\"，或显式传入 --task-id。"
+        actions = [
+            {
+                "label": "start_work",
+                "command": "python second_brain.py start --goal \"你的目标\" --agent \"你的 agent 名称\"",
+                "reason": "当前工作区还没有可接力的活跃任务。",
+            },
+            {
+                "label": "doctor",
+                "command": "python second_brain.py doctor --json",
+                "reason": "检查工作区绑定、数据库和活跃任务状态。",
+            },
+        ]
         if args.json:
-            emit({"ok": False, "message": message}, as_json=True)
+            emit({"ok": False, "message": message, "nextRecommendedActions": actions}, as_json=True)
             return
         print(message)
         raise SystemExit(1)
@@ -198,6 +212,11 @@ def handle_note(session: Session, args: argparse.Namespace) -> None:
     session.commit()
     workspace = write_workspace_state(_workspace_arg(args), task=task, agent=args.agent)
     payload = {"ok": True, "eventId": event.id, "task": _task_payload(session, task), "workspace": workspace}
+    if args.quiet and not args.json:
+        return
+    if not args.json:
+        print(f"已记录当前阶段状态：{event.summary}")
+        return
     emit(payload, as_json=args.json)
 
 
@@ -213,6 +232,11 @@ def handle_checkpoint(session: Session, args: argparse.Namespace) -> None:
         "task": _task_payload(session, task),
         "workspace": write_workspace_state(_workspace_arg(args), task=task),
     }
+    if args.quiet and not args.json:
+        return
+    if not args.json:
+        print(f"已保存阶段快照：{checkpoint.title}")
+        return
     emit(payload, as_json=args.json)
 
 
@@ -357,6 +381,8 @@ def cli_tools() -> list[dict[str, str]]:
         {"name": "start", "command": "python second_brain.py start --goal \"...\" --json", "purpose": "创建新的工作会话并绑定当前工作区。"},
         {"name": "note", "command": "python second_brain.py note --summary \"...\" --json", "purpose": "记录阶段进展并更新当前工作状态。"},
         {"name": "checkpoint", "command": "python second_brain.py checkpoint --title \"...\" --summary \"...\" --json", "purpose": "保存阶段快照。"},
+        {"name": "quiet-note", "command": "python second_brain.py note --summary \"...\" --quiet", "purpose": "后台静默记录阶段进展，不打扰用户。"},
+        {"name": "quiet-checkpoint", "command": "python second_brain.py checkpoint --title \"...\" --summary \"...\" --quiet", "purpose": "后台静默保存阶段快照。"},
         {"name": "healthcheck", "command": "python second_brain.py healthcheck --json", "purpose": "检查数据库、工作区绑定和可用命令。"},
         {"name": "doctor", "command": "python second_brain.py doctor --json", "purpose": "诊断本地运行状态、工作区绑定和恢复入口。"},
         {"name": "capabilities", "command": "python second_brain.py capabilities --json", "purpose": "列出 agent capability profile。"},

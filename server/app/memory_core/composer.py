@@ -80,11 +80,14 @@ class MemoryContextComposer:
             "budget": budget,
             "citationRefs": [],
             "decisionRefs": [],
+            "selectionTrace": [],
         }
 
         raw_slices = self.retrieve_slices(session, memory_query)
-        visible_slices, filter_warnings = self._filter_slices(raw_slices, memory_query)
-        slices = self._dedupe_slices(visible_slices)
+        visible_slices, filter_warnings, filter_trace = self._filter_slices(raw_slices, memory_query)
+        deduped_slices, dedupe_trace = self._dedupe_slices(visible_slices)
+        slices = self._rank_slices(deduped_slices, memory_query)
+        selection_trace = [*filter_trace, *dedupe_trace]
         warnings = [*filter_warnings, *self._conflict_warnings(slices)]
 
         task_state_slices = [item for item in slices if item.kind == "task_state"]
@@ -105,13 +108,18 @@ class MemoryContextComposer:
             digest_slice = task_digest_slices[0] if task_digest_slices else None
             event_limit = max(0, max_task_slices - 1 - (1 if digest_slice else 0))
             task_payload = self._task_state_payload(task_state_slices[0], task_event_slices[:event_limit], digest_slice)
-            used_chars, added = _put_single_if_within_budget(pack, "taskState", task_payload, used_chars, max_chars)
+            used_chars, added, payload_chars = _put_single_if_within_budget(pack, "taskState", task_payload, used_chars, max_chars)
             if added:
+                selection_trace.append(_slice_trace(task_state_slices[0], "selected", section="taskState", reason="selected task state", used_chars=payload_chars))
                 _collect_slice_refs(task_state_slices[0], citations, decisions)
                 if digest_slice:
+                    selection_trace.append(_slice_trace(digest_slice, "selected", section="taskState", reason="included task digest", used_chars=0))
                     _collect_slice_refs(digest_slice, citations, decisions)
                 for event_slice in task_event_slices[:event_limit]:
+                    selection_trace.append(_slice_trace(event_slice, "selected", section="taskState", reason="included recent task event", used_chars=0))
                     _collect_slice_refs(event_slice, citations, decisions)
+                for event_slice in task_event_slices[event_limit:]:
+                    selection_trace.append(_slice_trace(event_slice, "skipped", section="taskState", reason="skipped by maxTaskSlices", used_chars=0))
                 if task_state_slices[0].staleness and task_state_slices[0].staleness != "fresh":
                     warnings.append(
                         {
@@ -123,62 +131,75 @@ class MemoryContextComposer:
                     )
             else:
                 budget["truncated"] = True
+                selection_trace.append(_slice_trace(task_state_slices[0], "truncated", section="taskState", reason="skipped by maxChars", used_chars=0))
 
-        used_chars = self._append_slice_section(
-            session,
-            pack,
-            "rules",
-            rule_slices,
-            max_rules,
-            used_chars,
-            max_chars,
-            citations,
-            decisions,
-            "rule_preference",
-        )
-        used_chars = self._append_profile_section(
-            pack,
-            profile_slices,
-            max_profile_facts,
-            used_chars,
-            max_chars,
-            citations,
-            decisions,
-        )
-        used_chars = self._append_slice_section(
-            session,
-            pack,
-            "procedureLessons",
-            procedure_slices,
-            max_procedure_lessons,
-            used_chars,
-            max_chars,
-            citations,
-            decisions,
-            "procedure_lesson",
-        )
-        used_chars = self._append_page_section(pack, page_slices, max_pages, used_chars, max_chars, citations, decisions)
-        used_chars = self._append_slice_section(
-            session,
-            pack,
-            "relatedItems",
-            item_slices,
-            max_items,
-            used_chars,
-            max_chars,
-            citations,
-            decisions,
-            "semantic_knowledge",
-        )
+        for section in _section_order(trimmed):
+            if section == "rules":
+                used_chars = self._append_slice_section(
+                    session,
+                    pack,
+                    "rules",
+                    rule_slices,
+                    max_rules,
+                    used_chars,
+                    max_chars,
+                    citations,
+                    decisions,
+                    selection_trace,
+                    "rule_preference",
+                )
+            elif section == "profileFacts":
+                used_chars = self._append_profile_section(
+                    pack,
+                    profile_slices,
+                    max_profile_facts,
+                    used_chars,
+                    max_chars,
+                    citations,
+                    decisions,
+                    selection_trace,
+                )
+            elif section == "procedureLessons":
+                used_chars = self._append_slice_section(
+                    session,
+                    pack,
+                    "procedureLessons",
+                    procedure_slices,
+                    max_procedure_lessons,
+                    used_chars,
+                    max_chars,
+                    citations,
+                    decisions,
+                    selection_trace,
+                    "procedure_lesson",
+                )
+            elif section == "relatedPages":
+                used_chars = self._append_page_section(pack, page_slices, max_pages, used_chars, max_chars, citations, decisions, selection_trace)
+            elif section == "relatedItems":
+                used_chars = self._append_slice_section(
+                    session,
+                    pack,
+                    "relatedItems",
+                    item_slices,
+                    max_items,
+                    used_chars,
+                    max_chars,
+                    citations,
+                    decisions,
+                    selection_trace,
+                    "semantic_knowledge",
+                )
+
         used_chars = self._append_source_excerpts(
             session,
             pack,
-            [*item_slices, *rule_slices, *procedure_slices],
+            self._rank_slices([*item_slices, *rule_slices, *procedure_slices], memory_query),
             trimmed,
             max_source_excerpts,
             used_chars,
             max_chars,
             citations,
+            selection_trace,
         )
 
         if len(page_slices) > len(pack["relatedPages"]):
@@ -196,11 +217,13 @@ class MemoryContextComposer:
         pack["warnings"] = warnings
         pack["citationRefs"] = list(citations.values())
         pack["decisionRefs"] = list(decisions.values())
+        pack["selectionTrace"] = selection_trace
         return pack
 
-    def _filter_slices(self, slices: list[MemorySlice], query: MemoryQuery) -> tuple[list[MemorySlice], list[dict[str, Any]]]:
+    def _filter_slices(self, slices: list[MemorySlice], query: MemoryQuery) -> tuple[list[MemorySlice], list[dict[str, Any]], list[dict[str, Any]]]:
         filtered: list[MemorySlice] = []
         warnings: list[dict[str, Any]] = []
+        trace: list[dict[str, Any]] = []
         counts = {"scope": 0, "privacy": 0, "capability": 0}
 
         for memory_slice in slices:
@@ -224,6 +247,7 @@ class MemoryContextComposer:
                     "refs": [],
                 },
             )
+            trace.append(_aggregate_trace("filtered", "scope", counts["scope"], "scope mismatch"))
         if counts["privacy"]:
             warnings.append(
                 {
@@ -233,6 +257,7 @@ class MemoryContextComposer:
                     "refs": [],
                 },
             )
+            trace.append(_aggregate_trace("filtered", "privacy", counts["privacy"], "privacy or visibility boundary"))
         if counts["capability"]:
             warnings.append(
                 {
@@ -242,25 +267,33 @@ class MemoryContextComposer:
                     "refs": [],
                 },
             )
-        return filtered, warnings
+            trace.append(_aggregate_trace("filtered", "capability", counts["capability"], "missing declared capability"))
+        return filtered, warnings, trace
 
-    def _dedupe_slices(self, slices: list[MemorySlice]) -> list[MemorySlice]:
+    def _dedupe_slices(self, slices: list[MemorySlice]) -> tuple[list[MemorySlice], list[dict[str, Any]]]:
         deduped: list[MemorySlice] = []
+        trace: list[dict[str, Any]] = []
         seen_refs: set[str] = set()
         seen_source_items: set[str] = set()
         for memory_slice in slices:
             ref = str(memory_slice.ref)
             if ref in seen_refs:
+                trace.append(_slice_trace(memory_slice, "deduped", section=_trace_section(memory_slice), reason="duplicate ref", used_chars=0))
                 continue
             source_item_id = str(memory_slice.metadata.get("sourceItemId") or "")
             if memory_slice.kind == "knowledge_item" and source_item_id:
                 source_key = f"source:{source_item_id}"
                 if source_key in seen_source_items:
+                    trace.append(_slice_trace(memory_slice, "deduped", section=_trace_section(memory_slice), reason="duplicate source evidence", used_chars=0))
                     continue
                 seen_source_items.add(source_key)
             seen_refs.add(ref)
             deduped.append(memory_slice)
-        return deduped
+        return deduped, trace
+
+    def _rank_slices(self, slices: list[MemorySlice], query: MemoryQuery) -> list[MemorySlice]:
+        requested_scope = query.scope or (f"task:{query.task_session_id}" if query.task_session_id else None)
+        return sorted(slices, key=lambda memory_slice: (-_slice_utility(memory_slice, requested_scope), str(memory_slice.ref)))
 
     def _conflict_warnings(self, slices: list[MemorySlice]) -> list[dict[str, Any]]:
         warnings: list[dict[str, Any]] = []
@@ -325,11 +358,13 @@ class MemoryContextComposer:
         max_chars: int,
         citations: dict[str, dict[str, str]],
         decisions: dict[str, dict[str, str]],
+        selection_trace: list[dict[str, Any]],
     ) -> int:
         for memory_slice in page_slices:
             if len(pack["relatedPages"]) >= limit:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section="relatedPages", reason="skipped by maxPages", used_chars=0))
+                continue
             payload = {
                 "id": memory_slice.ref.id,
                 "title": memory_slice.title,
@@ -343,10 +378,12 @@ class MemoryContextComposer:
                 "decisionRef": memory_slice.decision_ref,
                 "scope": memory_slice.scope,
             }
-            used_chars, added = _append_if_within_budget(pack["relatedPages"], payload, used_chars, max_chars)
+            used_chars, added, payload_chars = _append_if_within_budget(pack["relatedPages"], payload, used_chars, max_chars)
             if not added:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "truncated", section="relatedPages", reason="skipped by maxChars", used_chars=0))
+                continue
+            selection_trace.append(_slice_trace(memory_slice, "selected", section="relatedPages", reason=memory_slice.reason or "selected knowledge page", used_chars=payload_chars))
             _collect_slice_refs(memory_slice, citations, decisions)
         return used_chars
 
@@ -361,12 +398,14 @@ class MemoryContextComposer:
         max_chars: int,
         citations: dict[str, dict[str, str]],
         decisions: dict[str, dict[str, str]],
+        selection_trace: list[dict[str, Any]],
         target_store: str,
     ) -> int:
         for memory_slice in slices:
             if len(pack[section]) >= limit:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section=section, reason=f"skipped by {section} limit", used_chars=0))
+                continue
             payload = {
                 "id": memory_slice.ref.id,
                 "title": memory_slice.title,
@@ -386,10 +425,12 @@ class MemoryContextComposer:
                 "knowledgeType": _knowledge_type(memory_slice),
                 "targetStore": target_store,
             }
-            used_chars, added = _append_if_within_budget(pack[section], payload, used_chars, max_chars)
+            used_chars, added, payload_chars = _append_if_within_budget(pack[section], payload, used_chars, max_chars)
             if not added:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "truncated", section=section, reason="skipped by maxChars", used_chars=0))
+                continue
+            selection_trace.append(_slice_trace(memory_slice, "selected", section=section, reason=memory_slice.reason or f"selected for {section}", used_chars=payload_chars))
             _collect_slice_refs(memory_slice, citations, decisions)
         return used_chars
 
@@ -402,11 +443,13 @@ class MemoryContextComposer:
         max_chars: int,
         citations: dict[str, dict[str, str]],
         decisions: dict[str, dict[str, str]],
+        selection_trace: list[dict[str, Any]],
     ) -> int:
         for memory_slice in profile_slices:
             if len(pack["profileFacts"]) >= limit:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section="profileFacts", reason="skipped by maxProfileFacts", used_chars=0))
+                continue
             payload = {
                 "ref": str(memory_slice.ref),
                 "kind": memory_slice.kind,
@@ -424,10 +467,12 @@ class MemoryContextComposer:
                 "conflictRefs": memory_slice.conflict_refs,
                 "metadata": dict(memory_slice.metadata),
             }
-            used_chars, added = _append_if_within_budget(pack["profileFacts"], payload, used_chars, max_chars)
+            used_chars, added, payload_chars = _append_if_within_budget(pack["profileFacts"], payload, used_chars, max_chars)
             if not added:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "truncated", section="profileFacts", reason="skipped by maxChars", used_chars=0))
+                continue
+            selection_trace.append(_slice_trace(memory_slice, "selected", section="profileFacts", reason=memory_slice.reason or "selected profile fact", used_chars=payload_chars))
             _collect_slice_refs(memory_slice, citations, decisions)
         return used_chars
 
@@ -441,6 +486,7 @@ class MemoryContextComposer:
         used_chars: int,
         max_chars: int,
         citations: dict[str, dict[str, str]],
+        selection_trace: list[dict[str, Any]],
     ) -> int:
         if not query:
             return used_chars
@@ -448,15 +494,20 @@ class MemoryContextComposer:
         for memory_slice in item_slices:
             if len(pack["sourceExcerpts"]) >= limit:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section="sourceExcerpts", reason="skipped by maxSourceExcerpts", used_chars=0))
+                continue
             source_item_id = str(memory_slice.metadata.get("sourceItemId") or "")
             if not source_item_id or source_item_id in seen_sources:
+                if source_item_id in seen_sources:
+                    selection_trace.append(_slice_trace(memory_slice, "deduped", section="sourceExcerpts", reason="duplicate source excerpt", used_chars=0))
                 continue
             source_item = session.get(SourceItem, source_item_id)
             if not source_item or not source_item.content_text:
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section="sourceExcerpts", reason="missing source body", used_chars=0))
                 continue
             excerpt = excerpt_around(source_item.content_text, query, limit=220)
             if not excerpt:
+                selection_trace.append(_slice_trace(memory_slice, "skipped", section="sourceExcerpts", reason="no matching source excerpt", used_chars=0))
                 continue
             source_ref = f"source:{source_item.id}"
             payload = {
@@ -469,11 +520,13 @@ class MemoryContextComposer:
                 "citationRef": source_ref,
                 "evidenceRefs": [source_ref],
             }
-            used_chars, added = _append_if_within_budget(pack["sourceExcerpts"], payload, used_chars, max_chars)
+            used_chars, added, payload_chars = _append_if_within_budget(pack["sourceExcerpts"], payload, used_chars, max_chars)
             if not added:
                 pack["budget"]["truncated"] = True
-                break
+                selection_trace.append(_slice_trace(memory_slice, "truncated", section="sourceExcerpts", reason="skipped by maxChars", used_chars=0, ref=source_ref, citation_ref=source_ref))
+                continue
             seen_sources.add(source_item_id)
+            selection_trace.append(_slice_trace(memory_slice, "selected", section="sourceExcerpts", reason="selected source excerpt", used_chars=payload_chars, ref=source_ref, citation_ref=source_ref))
             citations[source_ref] = {
                 "ref": source_ref,
                 "kind": "source_excerpt",
@@ -537,12 +590,12 @@ def _collect_slice_refs(
         }
 
 
-def _append_if_within_budget(items: list[dict[str, Any]], payload: dict[str, Any], used_chars: int, max_chars: int) -> tuple[int, bool]:
+def _append_if_within_budget(items: list[dict[str, Any]], payload: dict[str, Any], used_chars: int, max_chars: int) -> tuple[int, bool, int]:
     payload_chars = char_count(payload)
     if used_chars + payload_chars > max_chars:
-        return used_chars, False
+        return used_chars, False, payload_chars
     items.append(payload)
-    return used_chars + payload_chars, True
+    return used_chars + payload_chars, True, payload_chars
 
 
 def _put_single_if_within_budget(
@@ -551,15 +604,108 @@ def _put_single_if_within_budget(
     payload: dict[str, Any],
     used_chars: int,
     max_chars: int,
-) -> tuple[int, bool]:
+) -> tuple[int, bool, int]:
     payload_chars = char_count(payload)
     if used_chars + payload_chars > max_chars:
-        return used_chars, False
+        return used_chars, False, payload_chars
     pack[key] = payload
-    return used_chars + payload_chars, True
+    return used_chars + payload_chars, True, payload_chars
 
 
 def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if item]
+
+
+def _section_order(query: str) -> list[str]:
+    intent = _query_intent(query)
+    if intent == "procedure":
+        return ["procedureLessons", "rules", "relatedItems", "relatedPages", "profileFacts"]
+    if intent == "handoff":
+        return ["procedureLessons", "rules", "relatedItems", "relatedPages", "profileFacts"]
+    return ["rules", "profileFacts", "procedureLessons", "relatedPages", "relatedItems"]
+
+
+def _query_intent(query: str) -> str:
+    normalized = query.casefold()
+    handoff_terms = ["handoff", "resume", "checkpoint", "接力", "继续", "交接", "下一步", "任务状态"]
+    procedure_terms = ["procedure", "workflow", "lesson", "步骤", "流程", "经验", "踩坑", "怎么做"]
+    rule_terms = ["rule", "preference", "policy", "规则", "偏好", "原则", "必须", "不要"]
+    if any(term in normalized for term in handoff_terms):
+        return "handoff"
+    if any(term in normalized for term in procedure_terms):
+        return "procedure"
+    if any(term in normalized for term in rule_terms):
+        return "rule"
+    return "general"
+
+
+def _slice_utility(memory_slice: MemorySlice, requested_scope: str | None) -> float:
+    utility = float(memory_slice.score or 0.0)
+    if memory_slice.citation_ref:
+        utility += 8
+    if memory_slice.evidence_refs:
+        utility += 6
+    if memory_slice.decision_ref:
+        utility += 4
+    if requested_scope and memory_slice.scope == requested_scope:
+        utility += 6
+    if memory_slice.scope == "workspace":
+        utility += 1
+    if memory_slice.kind == "task_state":
+        utility += 12
+    if memory_slice.kind in {"task_digest", "task_event"}:
+        utility += 6
+    return utility
+
+
+def _aggregate_trace(status: str, category: str, count: int, reason: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "ref": f"filtered:{category}",
+        "kind": "filtered",
+        "store": "memory_core",
+        "section": "filter",
+        "reason": f"{count} slice(s) {reason}",
+        "score": 0.0,
+        "usedChars": 0,
+        "citationRef": "",
+    }
+
+
+def _slice_trace(
+    memory_slice: MemorySlice,
+    status: str,
+    *,
+    section: str,
+    reason: str,
+    used_chars: int,
+    ref: str | None = None,
+    citation_ref: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "ref": ref or str(memory_slice.ref),
+        "kind": memory_slice.kind,
+        "store": memory_slice.store,
+        "section": section,
+        "reason": reason,
+        "score": float(memory_slice.score or 0.0),
+        "usedChars": used_chars,
+        "citationRef": citation_ref if citation_ref is not None else (memory_slice.citation_ref or ""),
+    }
+
+
+def _trace_section(memory_slice: MemorySlice) -> str:
+    if memory_slice.kind == "knowledge_page":
+        return "relatedPages"
+    if memory_slice.kind in {"profile_fact", "profile_relation"}:
+        return "profileFacts"
+    if memory_slice.kind in {"task_state", "task_digest", "task_event"}:
+        return "taskState"
+    if _knowledge_type(memory_slice) == "rule_preference":
+        return "rules"
+    if _knowledge_type(memory_slice) == "procedure_lesson":
+        return "procedureLessons"
+    return "relatedItems"

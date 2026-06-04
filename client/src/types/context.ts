@@ -101,6 +101,18 @@ export type ContextWarning = {
   refs: string[]
 }
 
+export type ContextSelectionTraceEntry = {
+  status: string
+  ref: string
+  kind: string
+  store: string
+  section: string
+  reason: string
+  score: number
+  usedChars: number
+  citationRef: string
+}
+
 export type ContextPack = {
   query: string
   protocolReminder: string[]
@@ -126,4 +138,5 @@ export type ContextPack = {
   }
   citationRefs: ContextCitationRef[]
   decisionRefs: ContextCitationRef[]
+  selectionTrace: ContextSelectionTraceEntry[]
 }

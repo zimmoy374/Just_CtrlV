@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import text
 from sqlmodel import SQLModel, Session, create_engine, select
@@ -538,6 +540,81 @@ def test_context_composer_filters_scope_privacy_capability_and_surfaces_conflict
     warning_types = {warning["type"] for warning in pack["warnings"]}
     assert warning_types >= {"filtered_private", "filtered_scope", "insufficient_capability", "conflict"}
     assert all(ref["ref"] in {"item:visible", "item:conflict"} for ref in pack["citationRefs"])
+
+
+def test_context_pack_selection_trace_explains_filter_dedupe_and_budget_without_private_content(session: Session) -> None:
+    visible = MemorySlice(
+        store="static",
+        kind="knowledge_item",
+        ref=MemoryRef("item", "visible-trace"),
+        title="Visible trace memory",
+        summary="Visible trace memory",
+        excerpt="Visible trace memory",
+        score=100,
+        citation_ref="item:visible-trace",
+        evidence_refs=["source:visible-trace"],
+        metadata={"sourceItemId": "source-trace", "knowledgeType": "fragment"},
+    )
+    duplicate_ref = MemorySlice(
+        store="static",
+        kind="knowledge_item",
+        ref=MemoryRef("item", "visible-trace"),
+        title="Duplicate ref memory",
+        summary="Duplicate ref memory",
+        excerpt="Duplicate ref memory",
+        score=90,
+        citation_ref="item:visible-trace",
+        metadata={"sourceItemId": "source-duplicate-ref", "knowledgeType": "fragment"},
+    )
+    duplicate_source = MemorySlice(
+        store="static",
+        kind="knowledge_item",
+        ref=MemoryRef("item", "duplicate-source"),
+        title="Duplicate source memory",
+        summary="Duplicate source memory",
+        excerpt="Duplicate source memory",
+        score=80,
+        citation_ref="item:duplicate-source",
+        metadata={"sourceItemId": "source-trace", "knowledgeType": "fragment"},
+    )
+    private = MemorySlice(
+        store="static",
+        kind="knowledge_item",
+        ref=MemoryRef("item", "private-trace"),
+        title="PRIVATE_TRACE_SHOULD_NOT_APPEAR",
+        summary="PRIVATE_TRACE_SHOULD_NOT_APPEAR",
+        excerpt="PRIVATE_TRACE_SHOULD_NOT_APPEAR",
+        score=70,
+        citation_ref="item:private-trace",
+        visibility="private",
+    )
+    oversized = MemorySlice(
+        store="static",
+        kind="knowledge_item",
+        ref=MemoryRef("item", "oversized-trace"),
+        title="Oversized trace memory",
+        summary="Oversized trace memory",
+        excerpt=" ".join(["oversized-budget-token"] * 80),
+        score=10,
+        citation_ref="item:oversized-trace",
+        evidence_refs=["source:oversized-trace"],
+        metadata={"knowledgeType": "fragment"},
+    )
+
+    pack = MemoryContextComposer(router=MemoryRouter([StaticStore([visible, duplicate_ref, duplicate_source, private, oversized])])).build_context_pack(
+        session,
+        query="trace",
+        max_items=10,
+        max_chars=520,
+    )
+
+    statuses = {item["status"] for item in pack["selectionTrace"]}
+    assert statuses >= {"selected", "filtered", "deduped", "truncated"}
+    assert [item["id"] for item in pack["relatedItems"]] == ["visible-trace"]
+    assert pack["budget"]["truncated"] is True
+    assert any(item["ref"] == "item:visible-trace" and item["usedChars"] > 0 for item in pack["selectionTrace"])
+    assert any(item["status"] == "deduped" and item["reason"] in {"duplicate ref", "duplicate source evidence"} for item in pack["selectionTrace"])
+    assert "PRIVATE_TRACE_SHOULD_NOT_APPEAR" not in json.dumps(pack["selectionTrace"], ensure_ascii=False, default=str)
 
 
 def test_memory_router_accepts_profile_fact_and_context_retrieves_with_profile_capability(session: Session) -> None:

@@ -33,7 +33,7 @@ def build_task_handoff(
     digest, events = build_or_update_task_digest(session, task.id, recent_event_limit=DEFAULT_RECENT_EVENT_LIMIT)
     freshness = _task_freshness(task)
 
-    return {
+    payload = {
         "taskId": task.id,
         "status": task.status,
         "freshness": freshness,
@@ -69,6 +69,8 @@ def build_task_handoff(
             for event in events
         ],
     }
+    payload["nextRecommendedActions"] = _next_recommended_actions(payload)
+    return payload
 
 
 def render_handoff_content(payload: dict, *, handoff_format: str) -> str:
@@ -201,6 +203,7 @@ def _render_markdown_handoff(payload: dict) -> str:
     _append_list_section(lines, "风险", payload["risks"])
     _append_list_section(lines, "涉及文件", payload["filesTouched"])
     _append_digest_section(lines, payload.get("taskDigest"))
+    _append_action_section(lines, payload.get("nextRecommendedActions") or [])
     _append_ref_section(lines, "阶段快照引用", payload["checkpointRefs"])
     _append_ref_section(lines, "最近过程记录引用", payload["sourceRefs"])
     return "\n".join(lines).rstrip() + "\n"
@@ -246,6 +249,66 @@ def _append_digest_section(lines: list[str], digest: dict | None) -> None:
     if event_count:
         lines.append(f"- 覆盖事件数：{event_count}")
     lines.append("")
+
+
+def _append_action_section(lines: list[str], actions: list[dict]) -> None:
+    lines.extend(["## 建议下一步", ""])
+    if actions:
+        for action in actions:
+            label = action.get("label") or "next_action"
+            reason = action.get("reason") or ""
+            command = action.get("command") or ""
+            suffix = f"：{reason}" if reason else ""
+            lines.append(f"- `{label}`{suffix}")
+            if command:
+                lines.append(f"  - {command}")
+    else:
+        lines.append("- 暂无")
+    lines.append("")
+
+
+def _next_recommended_actions(payload: dict) -> list[dict]:
+    actions: list[dict] = []
+    freshness = payload.get("freshness") or {}
+    freshness_state = freshness.get("state")
+    task_id = payload.get("taskId") or ""
+    next_steps = payload.get("nextSteps") or []
+    status = payload.get("status") or ""
+
+    if freshness_state in {"stale", "expired"}:
+        actions.append(
+            {
+                "label": "confirm_current_state",
+                "reason": "这个 handoff 已经过期或可能过期，继续前先向用户确认当前状态。",
+                "command": f"python second_brain.py resume --task-id {task_id}",
+            },
+        )
+    if status in {"open", "paused", "handoff_ready", "waiting_user", "closing_review"}:
+        if next_steps:
+            actions.append(
+                {
+                    "label": "continue_next_step",
+                    "reason": f"优先继续：{next_steps[0]}",
+                    "command": f"python second_brain.py note --task-id {task_id} --summary \"接手并继续下一步\" --quiet",
+                },
+            )
+        else:
+            actions.append(
+                {
+                    "label": "inspect_context",
+                    "reason": "任务可继续，但 handoff 没有明确下一步，先读取 ContextPack 或询问用户确认。",
+                    "command": f"python second_brain.py resume --task-id {task_id}",
+                },
+            )
+    elif status in {"closed", "archived", "expired"}:
+        actions.append(
+            {
+                "label": "start_new_work_if_needed",
+                "reason": "当前任务已经结束；如需继续，请创建新的工作会话而不是复活终态任务。",
+                "command": "python second_brain.py start --goal \"新的目标\" --agent \"你的 agent 名称\"",
+            },
+        )
+    return actions
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

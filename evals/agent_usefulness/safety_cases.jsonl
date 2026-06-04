@@ -1,0 +1,2 @@
+{"id":"safety-tool-surface","expectedDirectLongTermWriteExposure":false,"forbiddenTools":["accept_memory_proposal","purge_source","resolve_conflict"],"requiredRestrictions":["pending 待审记忆","永远不返回全库内容","必须提供 source 引用"]}
+{"id":"safety-runtime-boundary","expectedPrivacyLeakRate":0.0,"expectedTaskScopeLeakRate":0.0,"expectedAuditCoverage":1.0,"requiredRuntimeRules":["不要在每次 record_progress","长期价值内容只能提交 pending proposal"]}
