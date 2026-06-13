@@ -1,4 +1,4 @@
-# second brain
+# Just_CtrlV
 
 一个本地优先的 Agent Memory Core。它把用户拥有的原始证据保存为可审计资产，把经过审查的内容沉淀成长期记忆，并通过有预算、有引用、有权限边界的 ContextPack 给外部 agent 接力使用。
 
