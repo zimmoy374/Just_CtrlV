@@ -3,7 +3,7 @@ export type AiStatus = "pending" | "generating" | "done" | "failed"
 
 export type CaptureCard = {
   id: string
-  weekKey: string
+  dayKey: string
   type: CardType
   textContent?: string | null
   imageUrl?: string | null
@@ -22,5 +22,3 @@ export type CaptureCard = {
   createdAt: string
   updatedAt: string
 }
-
-

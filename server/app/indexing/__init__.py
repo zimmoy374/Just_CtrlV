@@ -1,2 +1,0 @@
-"""Rebuildable knowledge indexes."""
-

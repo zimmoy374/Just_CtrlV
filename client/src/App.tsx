@@ -1,31 +1,17 @@
-import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Home, Search, ShieldCheck, Sparkles } from "lucide-react"
+import { useEffect, useState } from "react"
 
+import { DailyDecorations } from "./components/daily-decorations"
+import { DayCalendar } from "./components/day-calendar"
 import { ImagePreviewOverlay } from "./components/image-preview-overlay"
-import { SuggestionsPanel } from "./components/suggestions-panel"
-import { Button } from "./components/ui/button"
-import { WeekSummary } from "./components/week-summary"
+import { PawMenu } from "./components/paw-menu"
 import { useBoardController } from "./hooks/useBoardController"
-import { useKnowledgeWorkspace } from "./hooks/useKnowledgeWorkspace"
-import { useReviewWorkbench } from "./hooks/useReviewWorkbench"
 import { BoardPage } from "./pages/BoardPage"
-import { ReviewWorkbenchPage } from "./pages/ReviewWorkbenchPage"
-import { SearchPage } from "./pages/SearchPage"
-import type { KnowledgeSearchResult } from "./types/retrieval"
 
 function App() {
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-
-  const knowledge = useKnowledgeWorkspace({ setError, setToast })
-  const review = useReviewWorkbench({ setError, setToast })
-  const board = useBoardController({
-    view: knowledge.view,
-    setView: knowledge.setView,
-    setError,
-    setToast,
-    refreshReflections: knowledge.refreshReflections,
-  })
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false)
+  const board = useBoardController({ setError, setToast })
 
   useEffect(() => {
     if (!toast) return
@@ -33,133 +19,34 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  const handleOpenSearchResult = useCallback(
-    (result: KnowledgeSearchResult) => {
-      if (result.card) {
-        board.openCardWeek(result.card)
-      } else {
-        setToast(`来源：${result.knowledgeItem.source}`)
-      }
-    },
-    [board],
-  )
-
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="week-controls" aria-label="周导航">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            title="上一周"
-            onClick={() => board.setWeekStart(board.addWeeks(board.weekStart, -1))}
-          >
-            <ChevronLeft size={18} />
-          </Button>
-          <div className="week-label">
-            <strong>{board.weekTitle}</strong>
-            <span>{board.weekRange}</span>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            title="下一周"
-            onClick={() => board.setWeekStart(board.addWeeks(board.weekStart, 1))}
-          >
-            <ChevronRight size={18} />
-          </Button>
-        </div>
+      <DailyDecorations dayKey={board.selectedDay} />
+      <time className="day-stamp" dateTime={board.selectedDay}>{formatDay(board.selectedDay)}</time>
+      <PawMenu
+        selectedDay={board.selectedDay}
+        todayKey={board.todayKey}
+        onOpenCalendar={() => setIsCalendarOpen(true)}
+        onToday={() => board.setSelectedDay(board.todayKey)}
+      />
 
-        <form className="search-form" role="search" onSubmit={knowledge.handleSearchSubmit}>
-          <Search size={17} />
-          <input
-            value={knowledge.searchInput}
-            onChange={(event) => knowledge.setSearchInput(event.target.value)}
-            placeholder="搜索知识"
-            aria-label="搜索知识"
-          />
-          <button type="submit">搜索</button>
-        </form>
-
-        <div className="topbar-tools" aria-label="页面工具">
-          <WeekSummary cards={board.cards} weekTitle={board.weekTitle} onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)} />
-          <button type="button" className="topbar-tool" title="待整理建议" onClick={() => void knowledge.refreshReflections()}>
-            <Sparkles size={18} />
-            {knowledge.reflections.length > 0 ? <span className="tool-count">{knowledge.reflections.length}</span> : null}
-          </button>
-          <button
-            type="button"
-            className={`topbar-tool${knowledge.view === "review" ? " is-active" : ""}`}
-            title="记忆审查台"
-            onClick={() => {
-              knowledge.setView("review")
-              void review.refreshWorkbench()
-            }}
-          >
-            <ShieldCheck size={18} />
-            {review.workbench?.counts.pendingProposals ? <span className="tool-count">{review.workbench.counts.pendingProposals}</span> : null}
-          </button>
-          <button type="button" className="topbar-tool" title="回到本周" onClick={board.goToday}>
-            <Home size={18} />
-          </button>
-        </div>
-      </header>
-
-      <main className={`board-wrap view-${knowledge.view}`}>
-        {knowledge.view === "board" ? (
-          <BoardPage
-            cards={board.cards}
-            isLoading={board.isLoading}
-            isPanning={board.isPanning}
-            viewportRef={board.viewportRef}
-            pan={board.pan}
-            zoom={board.zoom}
-            textComposer={board.textComposer}
-            highlightedCardId={board.highlightedCardId}
-            onTextComposerChange={board.setTextComposer}
-            onComposerSubmit={board.handleComposerSubmit}
-            onPointerDown={board.handlePointerDown}
-            onPointerMove={board.handlePointerMove}
-            onPointerUp={board.handlePointerUp}
-            onDoubleClick={board.handleDoubleClick}
-            onMove={board.handleMove}
-            onDelete={board.handleDelete}
-            onRetry={board.handleRetry}
-            onCopyKeyword={board.handleCopyKeyword}
-            onDeleteKeyword={board.handleDeleteKeyword}
-            onOpenImage={board.openImagePreview}
-          />
-        ) : null}
-
-        {knowledge.view === "search" ? (
-          <SearchPage
-            query={knowledge.searchQuery}
-            results={knowledge.searchResults}
-            isLoading={knowledge.isSearchLoading}
-            onOpenCard={handleOpenSearchResult}
-            onSearchKeyword={(keyword) => void knowledge.runSearch(keyword)}
-          />
-        ) : null}
-
-        {knowledge.view === "review" ? (
-          <ReviewWorkbenchPage
-            workbench={review.workbench}
-            isLoading={review.isReviewLoading}
-            exportPath={review.exportPath}
-            onRefresh={() => void review.refreshWorkbench()}
-            onExport={() => void review.exportBundle()}
-            onSaveProposal={(id, payload) => void review.saveProposal(id, payload)}
-            onAcceptProposal={(id) => void review.acceptProposal(id)}
-            onDismissProposal={(id) => void review.dismissProposal(id)}
-            onSupersedeFact={(id, objectValue, evidenceRefs, reviewNote) => void review.supersedeFact(id, objectValue, evidenceRefs, reviewNote)}
-            onInvalidateFact={(id, reason) => void review.invalidateFact(id, reason)}
-            onResolveConflict={(id, resolution, winningFactId) => void review.resolveConflict(id, resolution, winningFactId)}
-            onSaveSourcePolicy={(id, visibility, privacyLabels) => void review.saveSourcePolicy(id, visibility, privacyLabels)}
-            onPurgeSource={(id, reason) => void review.purgeSource(id, reason)}
-          />
-        ) : null}
+      <main className="board-wrap">
+        <BoardPage
+          cards={board.cards}
+          isLoading={board.isLoading}
+          viewportRef={board.viewportRef}
+          textComposer={board.textComposer}
+          onTextComposerChange={board.setTextComposer}
+          onComposerSubmit={board.handleComposerSubmit}
+          onPointerMove={board.handleBoardPointerMove}
+          onDoubleClick={board.handleDoubleClick}
+          onMove={board.handleMove}
+          onDelete={board.handleDelete}
+          onRetry={board.handleRetry}
+          onCopyKeyword={board.handleCopyKeyword}
+          onDeleteKeyword={board.handleDeleteKeyword}
+          onOpenImage={board.openImagePreview}
+        />
 
         {board.imagePreview ? (
           <ImagePreviewOverlay
@@ -168,16 +55,28 @@ function App() {
             onClose={() => board.setImagePreview(null)}
           />
         ) : null}
-        <SuggestionsPanel
-          suggestions={knowledge.reflections}
-          onAccept={knowledge.handleAcceptReflection}
-          onDismiss={knowledge.handleDismissReflection}
-        />
         {error ? <div className="error-banner">{error}</div> : null}
         {toast ? <div className="toast">{toast}</div> : null}
       </main>
+      {isCalendarOpen ? (
+        <DayCalendar
+          selectedDay={board.selectedDay}
+          todayKey={board.todayKey}
+          availableDays={board.availableDays}
+          onSelect={(dayKey) => {
+            board.setSelectedDay(dayKey)
+            setIsCalendarOpen(false)
+          }}
+          onClose={() => setIsCalendarOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }
 
 export default App
+
+function formatDay(dayKey: string) {
+  const [year, month, day] = dayKey.split("-").map(Number)
+  return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date(year, month - 1, day))
+}

@@ -12,7 +12,7 @@ load_dotenv(ROOT_DIR / "server" / ".env")
 
 
 def _data_dir() -> Path:
-    env_value = os.getenv("SECOND_BRAIN_DATA_DIR")
+    env_value = os.getenv("JUST_CTRLV_DATA_DIR") or os.getenv("SECOND_BRAIN_DATA_DIR")
     path = Path(env_value) if env_value else ROOT_DIR / ".data"
     return path if path.is_absolute() else ROOT_DIR / path
 

@@ -12,5 +12,4 @@ __pycache__/
 node_modules/
 dist/
 
-evals/reports/*
-!evals/reports/.gitkeep
+evals/reports/

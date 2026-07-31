@@ -1,5 +1,6 @@
-import { motion, type PanInfo } from "framer-motion"
-import { Clipboard, Copy, ExternalLink, Link, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react"
+import { useRef, useState } from "react"
+import type { PointerEvent as ReactPointerEvent } from "react"
+import { ChevronDown, ChevronUp, Clipboard, Copy, ExternalLink, Link, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react"
 
 import { resolveAssetUrl } from "../lib/api/client"
 import { hashSeed } from "../lib/utils"
@@ -15,50 +16,89 @@ const STATUS_LABEL: Record<AiStatus, string> = {
 
 type BoardCardProps = {
   card: CaptureCard
-  isHighlighted?: boolean
-  onMove: (card: CaptureCard, x: number, y: number) => void
+  onMove: (card: CaptureCard, deltaX: number, deltaY: number) => void
   onDelete: (card: CaptureCard) => void
   onRetry: (card: CaptureCard) => void
   onCopyKeyword: (keyword: string) => void
   onDeleteKeyword: (card: CaptureCard, keyword: string) => void
   onOpenImage: (card: CaptureCard) => void
-  canvasScale: number
 }
 
 export function BoardCard({
   card,
-  isHighlighted = false,
   onMove,
   onDelete,
   onRetry,
   onCopyKeyword,
   onDeleteKeyword,
   onOpenImage,
-  canvasScale,
 }: BoardCardProps) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
   const seed = hashSeed(card.styleSeed)
   const palette = seed % 8
-  const decoration = seed % 8
+  const hasSummary = Boolean(card.summary?.trim())
+  const canExpand = card.type === "text" && hasSummary && Boolean(card.textContent?.trim())
   const baseClass =
     card.type === "image" ? "capture-card image-card" : card.type === "link" ? "capture-card link-card" : `capture-card text-card palette-${palette}`
-  const className = `${baseClass}${isHighlighted ? " is-highlighted" : ""}`
+  const className = `${baseClass}${isDragging ? " is-dragging" : ""}`
 
-  const handleDragEnd = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
-    onMove(card, Math.round(card.x + info.offset.x / canvasScale), Math.round(card.y + info.offset.y / canvasScale))
+  const handlePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button,a")) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY }
+    setIsDragging(true)
+  }
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    setDragOffset({ x: event.clientX - drag.startX, y: event.clientY - drag.startY })
+  }
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const deltaX = event.clientX - drag.startX
+    const deltaY = event.clientY - drag.startY
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    dragRef.current = null
+    setIsDragging(false)
+    setDragOffset({ x: 0, y: 0 })
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) onMove(card, deltaX, deltaY)
   }
 
   return (
-    <motion.article
+    <article
       className={className}
-      drag
-      dragMomentum={false}
-      style={{ x: card.x, y: card.y, rotate: `${card.rotation}deg`, width: card.width }}
-      onDragEnd={handleDragEnd}
+      style={{
+        left: `${card.x * 100}%`,
+        top: `${card.y * 100}%`,
+        width: card.width,
+        transform: `translate(${dragOffset.x}px, ${dragOffset.y}px) rotate(${card.rotation}deg)`,
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       tabIndex={0}
     >
-      <span className={`decor decor-${decoration}`} />
       <div className="card-inner">
         <div className="card-actions">
+          {canExpand ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              title={isExpanded ? "收起原文" : "展开原文"}
+              aria-expanded={isExpanded}
+              onClick={() => setIsExpanded((current) => !current)}
+            >
+              {isExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+            </Button>
+          ) : null}
           {card.aiStatus === "failed" ? (
             <Button type="button" variant="ghost" size="icon" title="重试智能整理" onClick={() => onRetry(card)}>
               <RefreshCw size={15} />
@@ -93,11 +133,21 @@ export function BoardCard({
               <ExternalLink size={13} />
             </em>
           </a>
+        ) : card.type === "text" ? (
+          <>
+            {hasSummary ? <p className="card-summary card-summary-primary">{card.summary}</p> : null}
+            {!hasSummary || isExpanded ? (
+              <div className={`raw-content${hasSummary ? " is-expanded" : ""}`}>
+                {hasSummary ? <span>原文</span> : null}
+                <p className="text-content">{card.textContent}</p>
+              </div>
+            ) : null}
+          </>
         ) : (
           <p className="text-content">{card.textContent}</p>
         )}
 
-        {card.summary ? <p className="card-summary">{card.summary}</p> : null}
+        {card.type !== "text" && card.summary ? <p className="card-summary">{card.summary}</p> : null}
 
         <KeywordArea
           card={card}
@@ -105,7 +155,7 @@ export function BoardCard({
           onDeleteKeyword={(keyword) => onDeleteKeyword(card, keyword)}
         />
       </div>
-    </motion.article>
+    </article>
   )
 }
 

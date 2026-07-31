@@ -88,7 +88,7 @@ def fetch_link_preview(input_url: str) -> dict[str, str]:
             follow_redirects=True,
             timeout=httpx.Timeout(10.0, connect=4.0),
             headers={
-                "User-Agent": "second-brain/1.0 (+https://local.second-brain)",
+                "User-Agent": "just-ctrl-v/1.0",
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.4",
             },
         ) as client:

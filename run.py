@@ -79,9 +79,9 @@ def main() -> None:
         cwd=ROOT,
     )
 
-    print("正在启动 second brain...")
+    print("正在启动 Just Ctrl+V...")
     if wait_for_port(5173) and wait_for_port(8000):
-        print(f"second brain：{URL}")
+        print(f"Just Ctrl+V：{URL}")
         webbrowser.open(URL)
     else:
         print("启动超时。请检查上方终端日志。")

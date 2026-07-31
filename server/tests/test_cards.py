@@ -1,168 +1,176 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
-from server.tests.support import PNG_1X1, app
+from .support import PNG_1X1, app
+
+from server.app.analysis.jobs import run_recoverable_analysis_jobs
+from server.app.database import engine
+from server.app.models import AnalysisJob, Card
 
 
-def test_text_card_crud_without_api_key() -> None:
+DAY_KEY = "2026-07-21"
+
+
+def configure_fake_ai(monkeypatch, *, summary: str = "自动提炼结果", keywords: list[str] | None = None) -> None:
+    from server.app import ai
+
+    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(ai.settings, "openai_base_url", "https://example.test/v1")
+    monkeypatch.setattr(ai.settings, "openai_model", "test-model")
+    monkeypatch.setattr(
+        ai,
+        "_analyze_with_provider",
+        lambda _card: {"summary": summary, "keywords": keywords or ["提炼", "白板"]},
+    )
+
+
+def test_text_card_is_created_and_analyzed(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch)
+
     with TestClient(app) as client:
-        created = client.post(
+        response = client.post(
             "/api/cards/text",
-            json={"weekKey": "2026-W21", "textContent": "一段关于温暖便签的知识材料", "x": 10, "y": 20},
+            json={"dayKey": DAY_KEY, "textContent": "粘贴进来的文本", "x": 0.12, "y": 0.16},
         )
-        assert created.status_code == 200
-        card = created.json()
-        assert card["type"] == "text"
+        assert response.status_code == 200
+        card_id = response.json()["id"]
 
-        cards = client.get("/api/weeks/2026-W21/cards").json()
-        assert len(cards) == 1
-        assert cards[0]["aiStatus"] == "failed"
-        assert "OPENAI_API_KEY" in cards[0]["aiError"]
+        cards = client.get(f"/api/days/{DAY_KEY}/cards").json()
+        card = next(item for item in cards if item["id"] == card_id)
 
-        patched = client.patch(f"/api/cards/{card['id']}", json={"x": 42, "keywords": ["琥珀", "便签"]})
-        assert patched.status_code == 200
-        assert patched.json()["x"] == 42
-        assert patched.json()["keywords"] == ["琥珀", "便签"]
+    assert card["textContent"] == "粘贴进来的文本"
+    assert card["summary"] == "自动提炼结果"
+    assert card["keywords"] == ["提炼", "白板"]
+    assert card["aiStatus"] == "done"
+    assert card["rotation"] == 0
+    assert card["dayKey"] == DAY_KEY
+    assert DAY_KEY in client.get("/api/days").json()
 
-def test_text_card_without_api_key_keeps_source_without_searchable_knowledge_item() -> None:
-    from sqlmodel import Session, select
 
-    from server.app.database import engine
-    from server.app.models import KnowledgeItem, SourceItem
+def test_link_card_keeps_preview_and_analysis(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch, summary="链接摘要", keywords=["链接"])
+    monkeypatch.setattr(
+        "server.app.routes.cards.fetch_link_preview",
+        lambda _url: {
+            "url": "https://example.com/article",
+            "title": "示例文章",
+            "description": "文章说明",
+            "content": "文章正文",
+        },
+    )
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/cards/text",
-            json={"weekKey": "2026-W20", "textContent": "只应保留原始来源的待分析材料", "x": 10, "y": 20},
-        ).json()
+        response = client.post(
+            "/api/cards/link",
+            json={"dayKey": DAY_KEY, "url": "https://example.com/article", "x": 0.1, "y": 0.2},
+        )
+        assert response.status_code == 200
+        card_id = response.json()["id"]
+        card = next(item for item in client.get(f"/api/days/{DAY_KEY}/cards").json() if item["id"] == card_id)
 
-        results = client.get("/api/knowledge/search", params={"q": "待分析材料"}).json()
-        assert results == []
+    assert card["sourceTitle"] == "示例文章"
+    assert card["sourceDescription"] == "文章说明"
+    assert card["summary"] == "链接摘要"
 
-    with Session(engine) as session:
-        source_item = session.exec(select(SourceItem).where(SourceItem.external_id == created["id"])).one()
-        knowledge_items = session.exec(select(KnowledgeItem).where(KnowledgeItem.card_id == created["id"])).all()
 
-    assert source_item.status == "active"
-    assert source_item.content_text == "只应保留原始来源的待分析材料"
-    assert knowledge_items == []
+def test_image_card_accepts_supported_images(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch, summary="图片摘要", keywords=["截图"])
 
-def test_image_card_upload_and_delete_without_api_key() -> None:
     with TestClient(app) as client:
-        created = client.post(
+        response = client.post(
             "/api/cards/image",
-            data={"weekKey": "2026-W22", "x": "14", "y": "28"},
-            files={"file": ("tiny.png", PNG_1X1, "image/png")},
+            data={"dayKey": DAY_KEY, "x": "0.28", "y": "0.31"},
+            files={"file": ("capture.png", PNG_1X1, "image/png")},
         )
-        assert created.status_code == 200
-        card = created.json()
-        assert card["imageUrl"].startswith("/uploads/")
+        assert response.status_code == 200
+        card_id = response.json()["id"]
+        card = next(item for item in client.get(f"/api/days/{DAY_KEY}/cards").json() if item["id"] == card_id)
 
-        deleted = client.delete(f"/api/cards/{card['id']}")
-        assert deleted.status_code == 204
-        assert client.get("/api/weeks/2026-W22/cards").json() == []
+    assert card["type"] == "image"
+    assert card["imageUrl"].startswith("/uploads/")
+    assert card["x"] == 0.28
+    assert card["y"] == 0.31
+    assert card["summary"] == "图片摘要"
 
-def test_knowledge_search_indexes_successfully_analyzed_card(monkeypatch) -> None:
-    from server.app import ai
 
-    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(ai.settings, "openai_base_url", "https://example.test/v1")
-    monkeypatch.setattr(ai.settings, "openai_model", "test-model")
-    monkeypatch.setattr(
-        ai,
-        "_analyze_with_provider",
-        lambda _card: {"summary": "用于检验全文索引同步", "keywords": ["索引同步验收"]},
-    )
+def test_card_can_be_moved_edited_and_deleted(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch)
+    delete_day = "2026-07-19"
 
     with TestClient(app) as client:
-        created = client.post(
+        card_id = client.post(
             "/api/cards/text",
-            json={"weekKey": "2026-W40", "textContent": "这个片段包含统一知识工作台线索", "x": 10, "y": 20},
-        ).json()
+            json={"dayKey": delete_day, "textContent": "可编辑卡片", "x": 0.1, "y": 0.2},
+        ).json()["id"]
+        patched = client.patch(f"/api/cards/{card_id}", json={"x": 0.3, "y": 0.42, "keywords": ["保留"]})
+        assert patched.status_code == 200
+        assert patched.json()["x"] == 0.3
+        assert patched.json()["keywords"] == ["保留"]
 
-        text_results = client.get("/api/knowledge/search", params={"q": "用于检验全文索引同步"}).json()
-        assert any(result["card"]["id"] == created["id"] for result in text_results if result.get("card"))
+        deleted = client.delete(f"/api/cards/{card_id}")
+        assert deleted.status_code == 204
+        assert all(item["id"] != card_id for item in client.get(f"/api/days/{delete_day}/cards").json())
+        assert delete_day not in client.get("/api/days").json()
 
-        keyword_results = client.get("/api/knowledge/search", params={"q": "索引同步验收"}).json()
-        assert keyword_results[0]["card"]["id"] == created["id"]
-        assert "关键词：索引同步验收" in keyword_results[0]["matchedFields"]
-        assert keyword_results[0]["excerpt"]
-        assert keyword_results[0]["reason"]
-        assert keyword_results[0]["source"]
 
-def test_recoverable_analysis_job_resumes_running_work(monkeypatch) -> None:
-    from uuid import uuid4
-
-    from sqlmodel import Session, select
-
-    from server.app import ai
-    from server.app.analysis.jobs import run_recoverable_analysis_jobs
-    from server.app.database import engine
-    from server.app.models import AnalysisJob, Card, KnowledgeItem
-
-    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(ai.settings, "openai_base_url", "https://example.test/v1")
-    monkeypatch.setattr(ai.settings, "openai_model", "test-model")
-    monkeypatch.setattr(
-        ai,
-        "_analyze_with_provider",
-        lambda _card: {"summary": "恢复任务生成正式知识", "keywords": ["任务恢复"]},
-    )
-
+def test_interrupted_analysis_job_recovers(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch, summary="恢复后完成", keywords=["恢复"])
     card_id = str(uuid4())
     job_id = str(uuid4())
+
     with Session(engine) as session:
         session.add(
             Card(
                 id=card_id,
-                week_key="2026-W48",
+                day_key=DAY_KEY,
                 type="text",
-                text_content="进程中断前还没完成的材料",
+                text_content="进程中断前的内容",
                 style_seed="recover",
                 ai_status="generating",
                 keywords=[],
             ),
         )
-        session.add(AnalysisJob(id=job_id, card_id=card_id, status="running", reason="test_recovery", attempts=1))
+        session.add(AnalysisJob(id=job_id, card_id=card_id, status="running", reason="test", attempts=1))
         session.commit()
 
     assert run_recoverable_analysis_jobs() >= 1
 
     with Session(engine) as session:
         card = session.get(Card, card_id)
-        job = session.get(AnalysisJob, job_id)
-        knowledge_item = session.exec(select(KnowledgeItem).where(KnowledgeItem.card_id == card_id)).one()
+        job = session.exec(select(AnalysisJob).where(AnalysisJob.id == job_id)).one()
 
-    assert card
-    assert card.ai_status == "done"
-    assert job
-    assert job.status == "succeeded"
-    assert job.attempts == 2
-    assert knowledge_item.summary == "恢复任务生成正式知识"
+    assert card and card.ai_status == "done" and card.summary == "恢复后完成"
+    assert job.status == "succeeded" and job.attempts == 2
 
-def test_card_position_patch_does_not_refresh_knowledge_item(monkeypatch) -> None:
-    from server.app import ai
 
-    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(ai.settings, "openai_base_url", "https://example.test/v1")
-    monkeypatch.setattr(ai.settings, "openai_model", "test-model")
-    monkeypatch.setattr(
-        ai,
-        "_analyze_with_provider",
-        lambda _card: {"summary": "拖动不应刷新知识索引", "keywords": ["位置保持"]},
-    )
+def test_days_only_lists_dates_with_cards(monkeypatch) -> None:
+    configure_fake_ai(monkeypatch)
 
     with TestClient(app) as client:
+        assert client.get("/api/days/2026-07-20/cards").json() == []
+        assert "2026-07-20" not in client.get("/api/days").json()
         created = client.post(
             "/api/cards/text",
-            json={"weekKey": "2026-W39", "textContent": "拖动不应刷新知识索引", "x": 10, "y": 20},
-        ).json()
+            json={"dayKey": "2026-07-20", "textContent": "昨天的记录", "x": 0.2, "y": 0.2},
+        )
+        assert created.status_code == 200
+        assert "2026-07-20" in client.get("/api/days").json()
 
-        before = client.get("/api/knowledge/search", params={"q": "拖动不应刷新"}).json()[0]["knowledgeItem"]
-        patched = client.patch(f"/api/cards/{created['id']}", json={"x": 333, "y": 444})
-        assert patched.status_code == 200
 
-        after = client.get("/api/knowledge/search", params={"q": "拖动不应刷新"}).json()[0]["knowledgeItem"]
-        assert after["id"] == before["id"]
-        assert after["updatedAt"] == before["updatedAt"]
+def test_card_creation_rejects_invalid_day_and_position() -> None:
+    with TestClient(app) as client:
+        invalid_day = client.post(
+            "/api/cards/text",
+            json={"dayKey": "not-a-date", "textContent": "内容", "x": 0.2, "y": 0.2},
+        )
+        invalid_position = client.post(
+            "/api/cards/text",
+            json={"dayKey": DAY_KEY, "textContent": "内容", "x": 2, "y": 0.2},
+        )
+
+    assert invalid_day.status_code == 400
+    assert invalid_position.status_code == 422

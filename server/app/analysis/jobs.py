@@ -5,7 +5,6 @@ from uuid import uuid4
 from sqlmodel import Session, select
 
 from .. import ai
-from ..capture.cards_service import commit_card_knowledge_item, sync_card_source_item
 from ..database import engine
 from ..models import AnalysisJob, Card, utc_now
 
@@ -76,7 +75,6 @@ def run_analysis_job(job_id: str) -> None:
             card.ai_error = None
             card.updated_at = utc_now()
             session.add(card)
-            commit_card_knowledge_item(session, card)
             _finish_job(job, "succeeded", None)
             session.add(job)
             session.commit()
@@ -160,7 +158,6 @@ def _mark_card_failed(session: Session, job: AnalysisJob, card: Card, error: str
     card.ai_error = error
     card.updated_at = utc_now()
     session.add(card)
-    sync_card_source_item(session, card)
     _finish_job(job, "failed", error)
     session.add(job)
     session.commit()

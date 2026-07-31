@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
-import random
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,9 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlmodel import Session, select
 
 from ..analysis.jobs import enqueue_card_analysis, run_analysis_job
-from ..capture.cards_service import commit_card_knowledge_item, sync_card_source_item
 from ..database import get_session
-from ..knowledge_core.lifecycle import archive_card_knowledge_item
 from ..link_preview import LinkPreviewError, fetch_link_preview
 from ..models import Card, utc_now
 from ..presenters import card_to_response
@@ -21,39 +19,48 @@ from ..settings import settings
 
 router = APIRouter()
 
-KNOWLEDGE_PATCH_FIELDS = {
-    "summary",
-    "keywords",
-}
 
-SOURCE_PATCH_FIELDS = {
-    "text_content",
-    "source_url",
-    "source_title",
-    "source_description",
-}
+def validate_day_key(value: str) -> str:
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="日期格式必须是 YYYY-MM-DD") from exc
 
 
-def new_card_base(week_key: str, card_type: str, x: float, y: float) -> Card:
-    seed = uuid4().hex[:10]
+def new_card(card_type: str, day_key: str, x: float, y: float) -> Card:
     return Card(
         id=str(uuid4()),
-        week_key=week_key,
+        day_key=validate_day_key(day_key),
         type=card_type,
         x=x,
         y=y,
         width=320 if card_type == "link" else 300 if card_type == "text" else 280,
-        rotation=random.choice([-3, -2, -1, 1, 2, 3]),
-        style_seed=seed,
+        rotation=0,
+        style_seed=uuid4().hex[:10],
         ai_status="pending",
         keywords=[],
     )
 
 
-@router.get("/api/weeks/{week_key}/cards", response_model=list[CardResponse])
-def list_cards(week_key: str, session: Session = Depends(get_session)) -> list[CardResponse]:
-    statement = select(Card).where(Card.week_key == week_key).order_by(Card.created_at)
-    cards = session.exec(statement).all()
+def save_and_analyze(session: Session, card: Card, background_tasks: BackgroundTasks) -> CardResponse:
+    session.add(card)
+    session.flush()
+    job = enqueue_card_analysis(session, card, reason="card_created")
+    session.commit()
+    session.refresh(card)
+    background_tasks.add_task(run_analysis_job, job.id)
+    return card_to_response(card)
+
+
+@router.get("/api/days", response_model=list[str])
+def list_active_days(session: Session = Depends(get_session)) -> list[str]:
+    return list(session.exec(select(Card.day_key).distinct().order_by(Card.day_key)).all())
+
+
+@router.get("/api/days/{day_key}/cards", response_model=list[CardResponse])
+def list_cards(day_key: str, session: Session = Depends(get_session)) -> list[CardResponse]:
+    clean_day_key = validate_day_key(day_key)
+    cards = session.exec(select(Card).where(Card.day_key == clean_day_key).order_by(Card.created_at)).all()
     return [card_to_response(card) for card in cards]
 
 
@@ -63,20 +70,11 @@ def create_text_card(
     background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ) -> CardResponse:
-    card = new_card_base(payload.week_key, "text", payload.x, payload.y)
+    card = new_card("text", payload.day_key, payload.x, payload.y)
     card.text_content = payload.text_content.strip()
     if not card.text_content:
         raise HTTPException(status_code=400, detail="文本不能为空")
-
-    session.add(card)
-    session.flush()
-    sync_card_source_item(session, card)
-    job = enqueue_card_analysis(session, card, reason="card_created")
-    job_id = job.id
-    session.commit()
-    session.refresh(card)
-    background_tasks.add_task(run_analysis_job, job_id)
-    return card_to_response(card)
+    return save_and_analyze(session, card, background_tasks)
 
 
 @router.post("/api/cards/link", response_model=CardResponse)
@@ -90,32 +88,25 @@ def create_link_card(
     except LinkPreviewError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    card = new_card_base(payload.week_key, "link", payload.x, payload.y)
+    card = new_card("link", payload.day_key, payload.x, payload.y)
     card.source_url = preview["url"]
     card.source_title = preview.get("title") or preview["url"]
     card.source_description = preview.get("description") or ""
     card.text_content = preview.get("content") or card.source_description or card.source_title
-
-    session.add(card)
-    session.flush()
-    sync_card_source_item(session, card)
-    job = enqueue_card_analysis(session, card, reason="card_created")
-    job_id = job.id
-    session.commit()
-    session.refresh(card)
-    background_tasks.add_task(run_analysis_job, job_id)
-    return card_to_response(card)
+    return save_and_analyze(session, card, background_tasks)
 
 
 @router.post("/api/cards/image", response_model=CardResponse)
 async def create_image_card(
     background_tasks: BackgroundTasks,
-    week_key: str = Form(..., alias="weekKey"),
-    x: float = Form(120),
-    y: float = Form(120),
+    day_key: str = Form(..., alias="dayKey"),
+    x: float = Form(0.12),
+    y: float = Form(0.16),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ) -> CardResponse:
+    if not 0 <= x <= 1 or not 0 <= y <= 1:
+        raise HTTPException(status_code=422, detail="卡片位置必须在页面范围内")
     if file.content_type not in {"image/png", "image/jpeg", "image/webp"}:
         raise HTTPException(status_code=400, detail="仅支持 PNG、JPEG、WebP 图片")
 
@@ -125,28 +116,15 @@ async def create_image_card(
 
     extension = mimetypes.guess_extension(file.content_type or "") or ".png"
     filename = f"{uuid4().hex}{extension}"
-    destination = Path(settings.upload_dir) / filename
-    destination.write_bytes(content)
+    (Path(settings.upload_dir) / filename).write_bytes(content)
 
-    card = new_card_base(week_key, "image", x, y)
+    card = new_card("image", day_key, x, y)
     card.image_filename = filename
-    session.add(card)
-    session.flush()
-    sync_card_source_item(session, card)
-    job = enqueue_card_analysis(session, card, reason="card_created")
-    job_id = job.id
-    session.commit()
-    session.refresh(card)
-    background_tasks.add_task(run_analysis_job, job_id)
-    return card_to_response(card)
+    return save_and_analyze(session, card, background_tasks)
 
 
 @router.patch("/api/cards/{card_id}", response_model=CardResponse)
-def patch_card(
-    card_id: str,
-    payload: CardPatch,
-    session: Session = Depends(get_session),
-) -> CardResponse:
+def patch_card(card_id: str, payload: CardPatch, session: Session = Depends(get_session)) -> CardResponse:
     card = session.get(Card, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
@@ -156,10 +134,6 @@ def patch_card(
         setattr(card, field, value)
     card.updated_at = utc_now()
     session.add(card)
-    if set(updates) & KNOWLEDGE_PATCH_FIELDS:
-        commit_card_knowledge_item(session, card)
-    elif set(updates) & SOURCE_PATCH_FIELDS:
-        sync_card_source_item(session, card)
     session.commit()
     session.refresh(card)
     return card_to_response(card)
@@ -174,12 +148,10 @@ def retry_analyze_card(
     card = session.get(Card, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
-    sync_card_source_item(session, card)
     job = enqueue_card_analysis(session, card, reason="manual_retry")
-    job_id = job.id
     session.commit()
     session.refresh(card)
-    background_tasks.add_task(run_analysis_job, job_id)
+    background_tasks.add_task(run_analysis_job, job.id)
     return card_to_response(card)
 
 
@@ -194,6 +166,5 @@ def delete_card(card_id: str, session: Session = Depends(get_session)) -> None:
         if image_path.exists():
             image_path.unlink()
 
-    archive_card_knowledge_item(session, card.id)
     session.delete(card)
     session.commit()
