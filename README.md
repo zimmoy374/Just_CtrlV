@@ -1,134 +1,120 @@
-# Just_CtrlV
+# CtrlV
 
-一个本地优先的 Agent Memory Core。它把用户拥有的原始证据保存为可审计资产，把经过审查的内容沉淀成长期记忆，并通过有预算、有引用、有权限边界的 ContextPack 给外部 agent 接力使用。
+CtrlV 是一个围绕“粘贴”设计的本地信息桌面。复制文本、网页链接或图片后按下 `Ctrl+V`，内容会保存到当天的纸面，并自动生成摘要和关键词。
 
-项目重点不是做更多页面，而是证明 agent 接入后能更可靠地恢复任务状态、读取相关上下文、提交待审记忆，并用可复现评测说明它不是玩具 demo。
+## 功能
 
-## 项目展示
+- 粘贴文本、公开网页链接、PNG、JPEG 和 WebP 图片
+- 在白板粘贴图片时直接生成规整图片卡片，不弹出裁剪界面
+- Windows 下随 `run.py` 启动全局截图助手，默认按 `Ctrl+Shift+X` 可从任意软件自由套索并直接贴到白板
+- 裁剪素材不套卡片、不生成摘要和关键词；来源标签只在悬浮时显示，并保持屏幕可读大小
+- 裁剪素材按选区实际尺寸贴入白板，不再统一放大成固定宽度
+- 本地记录来源窗口、应用和裁剪时间，并尽力读取浏览器 URL 或资源管理器选中文件
+- 全局截图剪刀以铰链固定跟随鼠标，按平滑轨迹方向转向，并在裁剪过程中掉落少量碎屑
+- 全局截图完成选区后，操作栏会自动出现在选区下方或上方，无需移动到屏幕角落
+- 白板采用 6000×4000 的世界画布；拖动空白处平移视野，滚轮围绕视野中心缩放全部素材，范围限制为 25%–250%
+- 每个日期会保存自己的视野中心和缩放比例；猫爪菜单提供“显示全部”入口
+- 卡片使用画布像素坐标，可移动到整张世界画布的任意位置；位置会保存到本地并在下次打开时恢复
+- 普通信息卡和双击新建编辑卡会根据窗口宽度自动补偿尺寸并保持可读；裁剪插画仍按真实画布比例缩放
+- 日期、猫抓菜单和悬浮来源信息位于摄像机之外，始终保持固定大小
+- 自动生成一句短摘要与最多 5 个关键词，失败后可以重试
+- 每个日期右下角固定显示纸飞机入口，不随画布缩放
+- 点击纸飞机会随机唤起一张过去的内容，可回到原日期定位该卡片
+- 按日期浏览历史内容
+- 拖动、删除卡片和管理关键词
+- 双击空白处添加文本，双击图片查看大图
+- 数据和上传图片保存在自己的服务器上
 
-![项目展示 1](img/01.png)
+## 技术结构
 
-![项目展示 2](img/02.png)
+- 前端：原生 HTML、CSS、JavaScript，无构建步骤
+- 后端：FastAPI
+- 数据库：SQLite，只有一张 `cards` 表
+- 图片：保存在 `.data/uploads/`
 
-![项目展示 3](img/03.png)
+## 本地运行
 
-![项目展示 4](img/04.png)
-
-## 安装
-
-先安装 Node.js 和 Python，然后在项目根目录运行一次：
+需要 Python 3.11 或更高版本。
 
 ```powershell
-python install.py
-```
-
-打开 `.env`，填写 OpenAI 或同协议模型接口：
-
-```text
-OPENAI_API_KEY=sk-你的密钥
-OPENAI_BASE_URL=https://你的中转地址/v1
-OPENAI_MODEL=支持识图的模型名
-SECOND_BRAIN_DATA_DIR=.data
-```
-
-## 运行
-
-双击 `run.py`，或运行：
-
-```powershell
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 python run.py
 ```
 
-应用会自动打开浏览器页面：`http://127.0.0.1:5173`
+在 `.env` 中填写兼容 OpenAI Chat Completions API 的服务配置：
 
-## 使用
-
-- Capture Inbox：保存文本、链接和图片证据；截图后回到页面按 `Ctrl+V` 可以粘贴成证据卡片。
-- Search & Context：搜索经过审查的长期记忆，查看命中原因、局部结果解释、ContextPack 和 selection trace。
-- Review Gate：审查待审记忆、证据权限、事实冲突和导出包。
-- Agent Handoff：外部 agent 进入项目后先 `resume`，阶段完成时静默 `note --quiet`，换 agent 或收尾时保存 checkpoint。
-
-## 知识库
-
-- 统一检索入口是 `/api/knowledge/search`，当前会搜索正式 KnowledgeItem。
-- 检索层采用本地优先的 hybrid pipeline：SQLite FTS/字段匹配召回、本地 deterministic vector 召回、RRF 融合和轻量重排；外部向量库或云 embedding 可以后续替换 provider。
-- 搜索页会基于当次搜索结果自动生成局部关联网络，不维护单独的全库关系入口。
-- 外部 agent 先读取 `/api/agent` 或 `/api/agent/instructions`，再读取 `/api/agent/tools`，然后通过 `/api/agent/context?q=...` 按预算获取 ContextPack；`selectionTrace` 会说明选中、过滤、去重和截断原因，它不需要也不应该全量读取知识库。
-- 外部 AI 已经让用户预览并确认的整理结果，可以通过 `/api/knowledge/import-confirmed` 写入正式知识库。
-- 记忆审查台只处理待审记忆、个人事实、冲突、规则、流程经验、知识页和原始证据；任务接力状态不会混进这个页面。
-- 用户卸载或迁移前，可以调用 `/api/knowledge/export` 导出 SourceItem、KnowledgeItem、KnowledgePage、MemoryProposal、外部 agent 协议记录和 provenance。
-
-## 跨 agent 接力
-
-进入项目后，agent 应先运行：
-
-```powershell
-python second_brain.py resume
+```text
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=your-model
 ```
 
-常用命令：
+启动后访问 `http://127.0.0.1:8765`。
 
-```powershell
-python second_brain.py start --goal "当前目标" --agent "agent 名称"
-python second_brain.py note --summary "这一步做了什么" --done "已完成事项" --next "下一步"
-python second_brain.py checkpoint --title "阶段摘要" --summary "当前状态、关键决策、下一步"
-python second_brain.py doctor --json
-python second_brain.py capabilities --json
-python second_brain.py demo
-python second_brain.py tools --json
-python second_brain.py install-agent --target all
+右上角猫爪菜单的齿轮可以启用或关闭全局截图，并直接录入新的快捷键。全局截图助手目前仅在 Windows 的 `run.py` 本地启动方式下运行；直接使用 `uvicorn` 启动时只提供 Web 服务。
+
+## 部署
+
+### 前后端一起部署
+
+FastAPI 会直接托管 `client/` 静态文件。服务器启动命令：
+
+```bash
+uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-支持 MCP 的 agent 可以使用本地 stdio server：
+部署时需要：
 
-```powershell
-python second_brain_mcp.py
+- 将 `.data/` 放在持久化磁盘中
+- 通过环境变量提供 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`
+- 不要把 `.env`、`.data/` 或用户上传的图片提交到 GitHub
+
+### 前后端分开部署
+
+`client/` 可以直接上传到 GitHub Pages、Cloudflare Pages、Netlify 或其他静态托管服务。
+
+在 `client/config.js` 中填写后端地址：
+
+```javascript
+window.CTRLV_API_BASE = "https://api.example.com"
 ```
 
-MCP 工具包括 `resume_work`、`record_progress`、`checkpoint_work`、`search_memory`、`read_evidence`、`propose_memory`。其中 `propose_memory` 只创建待审记忆，不会直接写入正式长期记忆。
+后端通过 `CTRLV_ALLOWED_ORIGINS` 允许前端域名访问：
 
-默认读取档位是 `work`，只用于普通工作接力。需要读取个人资料、私密或敏感证据时，agent 必须显式选择 `capabilityProfile`，并且仍然只能读取预算化 ContextPack 或明确 ref 的证据摘录。
+```text
+CTRLV_ALLOWED_ORIGINS=https://example.com,https://www.example.com
+```
 
-## 架构约定
+API 密钥始终只配置在后端，不要写入 `client/config.js`。
 
-- 当前整体架构说明见 `docs/SECOND_BRAIN_ARCHITECTURE.md`。
-- 面试导向的项目收敛和后续实施路线见 `docs/AGENT_MEMORY_KERNEL_ROADMAP.md`。
-- 外部 agent 接入后是否真的有用的评估方案见 `docs/AGENT_USEFULNESS_EVALUATION.md`。
-- 记忆评测协议见 `docs/MEMORY_EVALUATION_PROTOCOL.md`。
-- SourceItem、KnowledgeItem、KnowledgePage、MemoryProposal、MemoryDecision、ProvenanceEvent 和 Profile Temporal Graph 是稳定核心。
-- 外部 agent 只能读取受限上下文、读取明确引用的证据摘录、提交待审记忆；不能直接写入长期记忆、覆盖事实、解决冲突或清除证据。
-- 任务状态切换集中由状态机处理，`/api/tasks/*` 和 `/api/agent/tasks/*` 都不能绕过终态保护。
-- agent 任务状态是协议内部状态，不作为个人知识库前端页面展示。
-- agent 读取/写入审计保存在 provenance、系统状态和导出包里，不作为记忆审查台内容。
-- 任务滚动摘要只压缩上下文投影，不替换原始 `TaskEvent` 或 `SourceItem`。
-- `python second_brain.py doctor --json` 和 `/api/system/status` 是本地诊断入口。
+## 数据目录
 
-## 开发验证
+```text
+.data/
+├── ctrlv.sqlite
+└── uploads/
+```
 
-默认验收方式是不启动本地服务、不跑浏览器，直接跑命令：
+可以通过 `CTRLV_DATA_DIR` 修改数据目录。备份 `.data/` 即可备份全部内容。
+
+## 配置
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | AI 服务密钥 | 无 |
+| `OPENAI_BASE_URL` | Chat Completions API 地址 | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | 使用的模型 | `gpt-5.4` |
+| `CTRLV_DATA_DIR` | SQLite 和图片目录 | `.data` |
+| `CTRLV_ALLOWED_ORIGINS` | 允许跨域访问 API 的前端域名 | 本机地址 |
+| `CTRLV_HOST` | `run.py` 监听地址 | `127.0.0.1` |
+| `CTRLV_PORT` | `run.py` 监听端口 | `8765` |
+
+## 测试
 
 ```powershell
 python -m pytest -q
-cd client
-npm run lint
-npm run test:smoke
-npm run build
+node --check client\src\app.js
 ```
 
-记忆可靠性 challenge 评分台在 `evals/`，用于输出可复现的 ContextPack 检索、selection trace、跨 agent 接力、隐私/作用域隔离、审查门生命周期和 evaluator 故障注入指标；报告会区分功能分、评测严格度、证据等级和公开 benchmark 状态，避免把内部高分误写成 SOTA：
-
-```powershell
-python evals/run_memory_eval.py --output evals/reports/latest.md --json-output evals/reports/latest.json
-```
-
-本地规模压测独立运行，覆盖 SQLite 数据增长、hybrid retrieval 延迟/QPS、并发读和并发写冲突。它不是生产分布式 QPS 宣称，而是给简历和面试提供可复现实验口径：
-
-```powershell
-python evals/run_scale_benchmark.py --sizes 1000 5000 --queries 40 --read-workers 2 --write-workers 2 --writes-per-worker 10 --output evals/reports/scale_latest.md --json-output evals/reports/scale_latest.json
-```
-
-外部 agent 接入后是否真的有用，用 Agent Usefulness Eval 做 baseline 对比，衡量接力恢复、任务继续收益、重复工作下降、ContextPack 有用率和安全边界：
-
-```powershell
-python evals/run_agent_usefulness_eval.py --output evals/reports/agent_usefulness_latest.md --json-output evals/reports/agent_usefulness_latest.json
-```
+前端不依赖 npm；这里的 Node 命令只用于检查 JavaScript 语法，不影响运行和部署。
